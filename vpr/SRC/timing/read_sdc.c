@@ -380,7 +380,8 @@ static void count_netlist_clocks_as_constrained_clocks(void) {
 		if (logical_block[iblock].type == VPACK_LATCH) {
 			clock_net = logical_block[iblock].clock_net;
 			assert(clock_net != OPEN);
-			name = logical_block[clock_net].name;
+			/* EH: BUG fixed */
+			name = vpack_net[clock_net].name;
 			/* Now that we've found a clock, let's see if we've counted it already */
 			found = FALSE;
 			for (i = 0; !found && i < g_sdc->num_constrained_clocks; i++) {

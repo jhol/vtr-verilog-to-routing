@@ -85,7 +85,8 @@ void place_and_route(enum e_operation operation,
 				(PLACE_ONCE == placer_opts.place_freq) || (PLACE_ALWAYS == placer_opts.place_freq));
 		begin = clock();
 		try_place(placer_opts, annealing_sched, chan_width_dist, router_opts,
-				det_routing_arch, segment_inf, timing_inf, directs, num_directs);
+				det_routing_arch, segment_inf, timing_inf, directs, num_directs,
+				arch_file);
 		print_place(place_file, net_file, arch_file);
 		end = clock();
 #ifdef CLOCKS_PER_SEC
@@ -122,6 +123,10 @@ void place_and_route(enum e_operation operation,
 		}
 		/* Other constraints can be left to rr_graph to check since this is one pass routing */
 
+		// EH
+		fix_bram_connections();
+		split_gnd_vcc_nets(&router_opts);
+
 		/* Allocate the major routing structures. */
 
 		clb_opins_used_locally = alloc_route_structs();
@@ -130,9 +135,17 @@ void place_and_route(enum e_operation operation,
 		net_delay = alloc_net_delay(&net_delay_ch, clb_net,
 					num_nets);
 
+		// EH: Transform clocks into non-global nets 
+		// so that they get routed
+		// (but only after timing graph is built)
+		if (!router_opts.noGlobals) {
+			transform_clocks();
+		}
+
 		success = try_route(width_fac, router_opts, det_routing_arch,
 				segment_inf, timing_inf, net_delay, slacks, chan_width_dist,
-				clb_opins_used_locally, &Fc_clipped, directs, num_directs);
+				clb_opins_used_locally, &Fc_clipped, directs, num_directs,
+				arch_file);
 
 		if (Fc_clipped) {
 			vpr_printf(TIO_MESSAGE_WARNING, "Fc_output was too high and was clipped to full (maximum) connectivity.\n");
@@ -346,11 +359,11 @@ static int binary_search_place_and_route(struct s_placer_opts placer_opts,
 			placer_opts.place_chan_width = current;
 			try_place(placer_opts, annealing_sched, chan_width_dist,
 					router_opts, det_routing_arch, segment_inf, timing_inf,
-					directs, num_directs);
+					directs, num_directs, arch_file);
 		}
 		success = try_route(current, router_opts, det_routing_arch, segment_inf,
 				timing_inf, net_delay, slacks, chan_width_dist,
-				clb_opins_used_locally, &Fc_clipped, directs, num_directs);
+				clb_opins_used_locally, &Fc_clipped, directs, num_directs, arch_file);
 		attempt_count++;
 		fflush(stdout);
 #if 1
@@ -453,11 +466,12 @@ static int binary_search_place_and_route(struct s_placer_opts placer_opts,
 				placer_opts.place_chan_width = current;
 				try_place(placer_opts, annealing_sched, chan_width_dist,
 						router_opts, det_routing_arch, segment_inf, timing_inf,
-						directs, num_directs);
+						directs, num_directs, arch_file);
 			}
 			success = try_route(current, router_opts, det_routing_arch,
 					segment_inf, timing_inf, net_delay, slacks,
-					chan_width_dist, clb_opins_used_locally, &Fc_clipped, directs, num_directs);
+					chan_width_dist, clb_opins_used_locally, &Fc_clipped, directs, 
+					num_directs, arch_file);
 
 			if (success && Fc_clipped == FALSE) {
 				final = current;
@@ -501,7 +515,7 @@ static int binary_search_place_and_route(struct s_placer_opts placer_opts,
 			det_routing_arch.global_route_switch,
 			det_routing_arch.delayless_switch, timing_inf,
 			det_routing_arch.wire_to_ipin_switch, router_opts.base_cost_type,
-			directs, num_directs, FALSE,
+			directs, num_directs, FALSE, arch_file,
 			&warnings);
 
 	restore_routing(best_routing, clb_opins_used_locally,

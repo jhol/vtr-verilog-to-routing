@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <time.h>
+#include <string.h>
 #include "util.h"
 #include "vpr_types.h"
 #include "vpr_utils.h"
@@ -15,6 +16,9 @@
 #include "rr_graph.h"
 #include "read_xml_arch_file.h"
 #include "ReadOptions.h"
+#include "rr_graph_util.h"
+#include "rr_graph2.h"
+#include <set>
 
 /***************** Variables shared only by route modules *******************/
 
@@ -93,6 +97,16 @@ static struct s_linked_f_pointer *alloc_linked_f_pointer(void);
 static t_ivec **alloc_and_load_clb_opins_used_locally(void);
 static void adjust_one_rr_occ_and_pcost(int inode, int add_or_sub,
 		float pres_fac);
+
+/* EH */
+static void
+block_routing_nodes(struct s_router_opts *router_opts);
+static void
+reserve_slice_ipins(void);
+static void
+reserve_net_ipins(int inet);
+static void
+reserve_byps(void);
 
 /************************** Subroutine definitions ***************************/
 
@@ -216,12 +230,12 @@ void get_serial_num(void) {
 	}
 	vpr_printf(TIO_MESSAGE_INFO, "Serial number (magic cookie) for the routing is: %d\n", serial_num);
 }
-
 boolean try_route(int width_fac, struct s_router_opts router_opts,
 		struct s_det_routing_arch det_routing_arch, t_segment_inf * segment_inf,
 		t_timing_inf timing_inf, float **net_delay, t_slack * slacks,
 		t_chan_width_dist chan_width_dist, t_ivec ** clb_opins_used_locally,
-		boolean * Fc_clipped, t_direct_inf *directs, int num_directs) {
+		boolean * Fc_clipped, t_direct_inf *directs, int num_directs,
+		const char *arch_file) {
 
 	/* Attempts a routing via an iterated maze router algorithm.  Width_fac *
 	 * specifies the relative width of the channels, while the members of   *
@@ -234,6 +248,7 @@ boolean try_route(int width_fac, struct s_router_opts router_opts,
 	clock_t begin, end;
 	boolean success;
 	t_graph_type graph_type;
+	int inet, num_global_nets;
 
 	if (router_opts.route_type == GLOBAL) {
 		graph_type = GRAPH_GLOBAL;
@@ -262,7 +277,7 @@ boolean try_route(int width_fac, struct s_router_opts router_opts,
 			det_routing_arch.global_route_switch,
 			det_routing_arch.delayless_switch, timing_inf,
 			det_routing_arch.wire_to_ipin_switch, router_opts.base_cost_type,
-			directs, num_directs, FALSE,
+			directs, num_directs, FALSE, arch_file,
 			&tmp);
 
 	end = clock();
@@ -277,8 +292,19 @@ boolean try_route(int width_fac, struct s_router_opts router_opts,
 
 	alloc_and_load_rr_node_route_structs();
 
+	/* EH: Block all routing nodes which have been used
+	 * for local intra-CLB feedback */
+	block_routing_nodes(&router_opts);
+
 	init_route_structs(router_opts.bb_factor);
 
+	num_global_nets = 0;
+	for (inet = 0; inet < num_nets; ++inet) {
+		if (clb_net[inet].is_global)
+			++num_global_nets;
+	}
+
+	vpr_printf(TIO_MESSAGE_INFO, "Number of nets to be routed: %d (not including %d global nets).\n", num_nets-num_global_nets, num_global_nets);
 	if (router_opts.router_algorithm == BREADTH_FIRST) {
 		vpr_printf(TIO_MESSAGE_INFO, "Confirming Router Algorithm: BREADTH_FIRST.\n");
 		success = try_breadth_first_route(router_opts, clb_opins_used_locally,
@@ -312,7 +338,7 @@ boolean feasible_routing(void) {
 	return (TRUE);
 }
 
-void pathfinder_update_one_cost(struct s_trace *route_segment_start,
+int pathfinder_update_one_cost(struct s_trace *route_segment_start,
 		int add_or_sub, float pres_fac) {
 
 	/* This routine updates the occupancy and pres_cost of the rr_nodes that are *
@@ -325,10 +351,13 @@ void pathfinder_update_one_cost(struct s_trace *route_segment_start,
 
 	struct s_trace *tptr;
 	int inode, occ, capacity;
+	int score;
+
+	score = 0;
 
 	tptr = route_segment_start;
 	if (tptr == NULL) /* No routing yet. */
-		return;
+		return score;
 
 	for (;;) {
 		inode = tptr->index;
@@ -346,8 +375,10 @@ void pathfinder_update_one_cost(struct s_trace *route_segment_start,
 			rr_node_route_inf[inode].pres_cost = 1.;
 		} else {
 			rr_node_route_inf[inode].pres_cost = 1.
-					+ (occ + 1 - capacity) * pres_fac;
+				+ (occ + 1 - capacity) * pres_fac;
 		}
+
+		score += std::max(0, occ - capacity);
 
 		if (rr_node[inode].type == SINK) {
 			tptr = tptr->next; /* Skip next segment. */
@@ -358,9 +389,11 @@ void pathfinder_update_one_cost(struct s_trace *route_segment_start,
 		tptr = tptr->next;
 
 	} /* End while loop -- did an entire traceback. */
+
+	return score;
 }
 
-void pathfinder_update_cost(float pres_fac, float acc_fac) {
+void pathfinder_update_cost(float pres_fac, float acc_fac)  {
 
 	/* This routine recomputes the pres_cost and acc_cost of each routing        *
 	 * resource for the pathfinder algorithm after all nets have been routed.    *
@@ -371,7 +404,6 @@ void pathfinder_update_cost(float pres_fac, float acc_fac) {
 	 * DATE.                                                                     */
 
 	int inode, occ, capacity;
-
 	for (inode = 0; inode < num_rr_nodes; inode++) {
 		occ = rr_node[inode].occ;
 		capacity = rr_node[inode].capacity;
@@ -797,6 +829,7 @@ void alloc_and_load_rr_node_route_structs(void) {
 		rr_node_route_inf[inode].acc_cost = 1.;
 		rr_node_route_inf[inode].path_cost = HUGE_POSITIVE_FLOAT;
 		rr_node_route_inf[inode].target_flag = 0;
+		rr_node_route_inf[inode].reserved_for = OPEN;
 	}
 }
 
@@ -816,6 +849,7 @@ void reset_rr_node_route_structs(void) {
 		rr_node_route_inf[inode].acc_cost = 1.;
 		rr_node_route_inf[inode].path_cost = HUGE_POSITIVE_FLOAT;
 		rr_node_route_inf[inode].target_flag = 0;
+		rr_node_route_inf[inode].reserved_for = OPEN;
 	}
 }
 
@@ -845,13 +879,19 @@ static void load_route_bb(int bb_factor) {
 	int k, xmax, ymax, xmin, ymin, x, y, inet;
 
 	for (inet = 0; inet < num_nets; inet++) {
+		int iblk;
+		/* EH: Ignore bb for global nets */
+		if (clb_net[inet].is_global)
+			continue;
+
 		x = block[clb_net[inet].node_block[0]].x;
 		y =
 				block[clb_net[inet].node_block[0]].y
-						+ block[clb_net[inet].node_block[0]].type->pin_height[clb_net[inet].node_block_pin[0]];
+						/*+ block[clb_net[inet].node_block[0]].type->pin_height[clb_net[inet].node_block_pin[0]];*/
+						+ block[clb_net[inet].node_block[0]].type->height;
 
 		xmin = x;
-		ymin = y;
+		ymin = block[clb_net[inet].node_block[0]].y;
 		xmax = x;
 		ymax = y;
 
@@ -859,7 +899,7 @@ static void load_route_bb(int bb_factor) {
 			x = block[clb_net[inet].node_block[k]].x;
 			y =
 					block[clb_net[inet].node_block[k]].y
-							+ block[clb_net[inet].node_block[k]].type->pin_height[clb_net[inet].node_block_pin[k]];
+							/*+ block[clb_net[inet].node_block[k]].type->pin_height[clb_net[inet].node_block_pin[k]]*/;
 
 			if (x < xmin) {
 				xmin = x;
@@ -869,23 +909,45 @@ static void load_route_bb(int bb_factor) {
 
 			if (y < ymin) {
 				ymin = y;
-			} else if (y > ymax) {
+			} 
+			
+			y = block[clb_net[inet].node_block[k]].y + block[clb_net[inet].node_block[k]].type->height;
+			if (y > ymax) {
 				ymax = y;
 			}
 		}
 
 		/* Want the channels on all 4 sides to be usuable, even if bb_factor = 0. */
 
+		/* EH:
 		xmin -= 1;
-		ymin -= 1;
+		ymin -= 1;*/
 
 		/* Expand the net bounding box by bb_factor, then clip to the physical *
 		 * chip area.                                                          */
 
-		route_bb[inet].xmin = std::max(xmin - bb_factor, 0);
-		route_bb[inet].xmax = std::min(xmax + bb_factor, nx + 1);
-		route_bb[inet].ymin = std::max(ymin - bb_factor, 0);
-		route_bb[inet].ymax = std::min(ymax + bb_factor, ny + 1);
+		/* EH: For nets starting at BUFG (e.g. global opin)
+		 * then consider clock regions above and below */
+		iblk = clb_net[inet].node_block[0];
+		assert(iblk != OPEN);
+		if (strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) == 0) {
+			route_bb[inet].xmin = xmin;
+			route_bb[inet].xmax = xmax;
+			route_bb[inet].ymin = ymin;
+			route_bb[inet].ymax = ymax;
+		}
+		else if (strcmp(block[iblk].type->name, "BUFG") == 0) {
+			route_bb[inet].xmin = std::max(xmin - bb_factor, 0);
+			route_bb[inet].xmax = std::min(xmax + bb_factor, nx + 1);
+			route_bb[inet].ymin = std::max(ymin - std::max(bb_factor, 25), 0);
+			route_bb[inet].ymax = std::min(ymax + std::max(bb_factor, 25), ny + 1);
+		}
+		else {
+			route_bb[inet].xmin = std::max(xmin - bb_factor, 0);
+			route_bb[inet].xmax = std::min(xmax + bb_factor, nx + 1);
+			route_bb[inet].ymin = std::max(ymin - bb_factor, 0);
+			route_bb[inet].ymax = std::min(ymax + bb_factor, ny + 1);
+		}
 	}
 }
 
@@ -1156,7 +1218,6 @@ void print_route(char *route_file) {
 					}
 
 					fprintf(fp, "%d  ", rr_node[inode].ptc_num);
-
 					/* Uncomment line below if you're debugging and want to see the switch types *
 					 * used in the routing.                                                      */
 					/*          fprintf (fp, "Switch: %d", tptr->iswitch);    */
@@ -1174,6 +1235,10 @@ void print_route(char *route_file) {
 
 			for (ipin = 0; ipin <= clb_net[inet].num_sinks; ipin++) {
 				bnum = clb_net[inet].node_block[ipin];
+				if (bnum == OPEN) {
+					assert(ipin == 0);
+					continue;
+				}
 
 				node_block_pin = clb_net[inet].node_block_pin[ipin];
 				iclass = block[bnum].type->pin_class[node_block_pin];
@@ -1281,6 +1346,1331 @@ static void adjust_one_rr_occ_and_pcost(int inode, int add_or_sub,
 void free_chunk_memory_trace(void) {
 	if (trace_ch.chunk_ptr_head != NULL) {
 		free_chunk_memory(&trace_ch);
+	}
+}
+
+/* EH */
+#define NUM_MOST_CONGESTED 10
+int feasible_routing_score(void) {
+
+	/* This routine checks to see if this is a resource-feasible routing.      *
+	 * That is, are all rr_node capacity limitations respected?  It assumes    *
+	 * that the occupancy arrays are up to date when it is called.             */
+
+	int inode;
+	int score, total_score /*, count*/;
+	std::set<std::pair<int,int> > most_congested;
+
+	total_score = 0;
+	//count = 0;
+	for (inode = 0; inode < num_rr_nodes; inode++) {
+		if (rr_node[inode].occ > rr_node[inode].capacity) {
+			score = std::max(0, rr_node[inode].occ - rr_node[inode].capacity);
+			total_score += score;
+
+#ifdef NUM_MOST_CONGESTED
+			if (score > 0) {
+				if ((rr_node[inode].type == CHANX || rr_node[inode].type == CHANY)
+						&& rr_node[inode].prev_node == OPEN) {
+					if (most_congested.size() < NUM_MOST_CONGESTED)
+						most_congested.insert(std::make_pair(score, inode));
+					else if (most_congested.size() == NUM_MOST_CONGESTED) {
+						std::pair<int,int> smallest = *most_congested.begin();
+						if (smallest.first < score) {
+							most_congested.erase(most_congested.begin());
+							most_congested.insert(std::make_pair(score, inode));
+						}
+					}
+				}
+			}
+#endif
+		}
+	}
+	
+#ifdef NUM_MOST_CONGESTED
+	if (!most_congested.empty()) {
+		std::set<std::pair<int,int> >::const_reverse_iterator it = most_congested.rbegin();
+		std::set<std::pair<int,int> >::const_reverse_iterator ie = most_congested.rend();
+		vpr_printf(TIO_MESSAGE_INFO, "Top %d most congested nodes:", NUM_MOST_CONGESTED);
+		vpr_printf(TIO_MESSAGE_INFO, "\n");
+		for (; it != ie; ++it) {
+			score = it->first;
+			inode = it->second;
+			vpr_printf(TIO_MESSAGE_INFO, "\t");
+			vpr_printf(TIO_MESSAGE_INFO, " %d: %d", score, inode);
+			/*vpr_printf(TIO_MESSAGE_INFO, " (%d@%d)", rr_node[inode].ptc_num, rr_node[inode].net_num);*/
+			vpr_printf(TIO_MESSAGE_INFO, "\n");
+		}
+	}
+
+	int inet;
+	struct s_trace *tptr;
+	most_congested.clear();
+	for (inet = 0; inet < num_nets; ++inet) {
+		tptr = trace_head[inet];
+		score = 0;
+		while (tptr != NULL) {
+			inode = tptr->index;
+			if (rr_node[inode].occ > rr_node[inode].capacity)
+				score += std::max(0, rr_node[inode].occ - rr_node[inode].capacity);
+			tptr = tptr->next;
+		}
+
+		if (score > 0) {
+			if (most_congested.size() < NUM_MOST_CONGESTED)
+				most_congested.insert(std::make_pair(score, inet));
+			else if (most_congested.size() == NUM_MOST_CONGESTED) {
+				std::pair<int,int> smallest = *most_congested.begin();
+				if (smallest.first < score) {
+					most_congested.erase(most_congested.begin());
+					most_congested.insert(std::make_pair(score, inet));
+				}
+			}
+		}
+	}
+
+	if (!most_congested.empty()) {
+		std::set<std::pair<int,int> >::const_reverse_iterator it = most_congested.rbegin();
+		std::set<std::pair<int,int> >::const_reverse_iterator ie = most_congested.rend();
+		vpr_printf(TIO_MESSAGE_INFO, "Top %d most congested nets:", NUM_MOST_CONGESTED);
+		vpr_printf(TIO_MESSAGE_INFO, "\n");
+		for (; it != ie; ++it) {
+			score = it->first;
+			inet = it->second;
+			vpr_printf(TIO_MESSAGE_INFO, "\t");
+			vpr_printf(TIO_MESSAGE_INFO, " %d: inet %d (%s, %d sinks, bb: (%d,%d)-(%d,%d))\n", 
+					score, inet, clb_net[inet].name, clb_net[inet].num_sinks,
+					route_bb[inet].xmin, route_bb[inet].ymin,
+					route_bb[inet].xmax, route_bb[inet].ymax);
+		}
+	}
+#endif
+
+	return total_score;
+}
+
+static short*
+find_switch(int src_inode, int sink_inode)
+{
+	int iedge;
+	assert(rr_node[src_inode].num_edges > 0);
+	for (iedge = 0; iedge < rr_node[src_inode].num_edges; ++iedge)
+	{
+		int inode;
+		inode = rr_node[src_inode].edges[iedge];
+		if (inode == sink_inode)
+			break;
+	}
+	/*assert(iedge < rr_node[src_inode].num_edges);*/
+	if (iedge == rr_node[src_inode].num_edges)
+		return NULL;
+	return &rr_node[src_inode].switches[iedge];
+}
+
+short*
+find_rt(int x, int y, int src_ptc, int sink_ptc) 
+{
+	int src_inode, sink_inode;
+	short *pswitch;
+
+	src_inode = get_rr_node_index(x, y, IPIN, src_ptc, rr_node_indices);
+	assert(rr_node[src_inode].xlow == x);
+	assert(rr_node[src_inode].ylow == y);
+	assert(rr_node[src_inode].type == IPIN);
+	src_inode = rr_node[src_inode].prev_node;
+	assert(src_inode != OPEN);
+	assert(rr_node[src_inode].type == CHANX || rr_node[src_inode].type == CHANY);
+
+	sink_inode = get_rr_node_index(x, y, OPIN, sink_ptc, rr_node_indices);
+	assert(rr_node[sink_inode].xlow == x);
+	assert(rr_node[sink_inode].ylow == y);
+	assert(rr_node[sink_inode].type == OPIN);
+	assert(rr_node[sink_inode].num_edges == 1);
+	sink_inode = rr_node[sink_inode].edges[0];
+	assert(sink_inode != OPEN);
+	assert(rr_node[sink_inode].type == CHANX || rr_node[sink_inode].type == CHANY);
+
+	pswitch = find_switch(src_inode, sink_inode);
+	if (pswitch && *pswitch == OPEN)
+		return NULL;
+	return pswitch;
+}
+
+static void
+delete_rt(int x, int y, int src_ptc, int sink_ptc)
+{
+	short *pswitch;
+
+	pswitch = find_rt(x, y, src_ptc, sink_ptc);
+	if (pswitch) {
+		assert(*pswitch == LUT_SWITCH_INDEX);
+		*pswitch = OPEN;
+	}
+}
+
+static void
+reserve_ipin_and_delete_other_edges(int x, int y, int ptc, int inet)
+{
+	int inode, prev_node;
+	//short *pswitch;
+
+	inode = get_rr_node_index(x, y, IPIN, ptc, rr_node_indices);
+	assert(rr_node[inode].xlow == x);
+	assert(rr_node[inode].ylow == y);
+	assert(rr_node[inode].type == IPIN);
+
+	prev_node = rr_node[inode].prev_node;
+	assert(prev_node != OPEN);
+
+	rr_node_route_inf[prev_node].reserved_for = inet;
+	 
+	// Erase all other edges apart from prev_node to
+	// the IPIN node we want to reserve
+	if (rr_node[prev_node].num_edges > 1) {
+		int iedge;
+		for (iedge = 0; iedge < rr_node[prev_node].num_edges; ++iedge) {
+			if (rr_node[prev_node].edges[iedge] != inode) {
+				rr_node[prev_node].switches[iedge] = OPEN;
+			}
+		}
+	}
+
+	//pswitch = find_switch(rr_node[inode].prev_node, inode);
+	//assert(pswitch);
+	//if (*pswitch == OPEN)
+	//	return;
+	//assert(*pswitch == DEFAULT_SWITCH_INDEX);
+	//*pswitch = OPEN;
+}
+
+static void
+block_routing_nodes(struct s_router_opts *router_opts) {
+	int inet, inet_vcc, inet_gnd;
+
+	reserve_slice_ipins();
+
+	inet_vcc = inet_gnd = OPEN;
+	for (inet = 0; inet < num_nets; ++inet) {
+		if (strcmp(clb_net[inet].name, "gnd") == 0)
+			inet_gnd = inet;
+		else if (strcmp(clb_net[inet].name, "vcc") == 0)
+			inet_vcc = inet;
+		if (inet_vcc != OPEN && inet_gnd != OPEN)
+			break;
+	}
+	assert(inet_vcc != OPEN && inet_gnd != OPEN);
+
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+	for (inet = 0; inet < num_nets; ++inet) {
+		int isink, inet_ref;
+		char c;
+		if (strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) != 0)
+			continue;
+
+		c = clb_net[inet].name[strlen("GLOBAL_LOGIC")];
+		if (c == '0')
+			inet_ref = inet_gnd;
+		else if (c == '1')
+			inet_ref = inet_vcc;
+		else assert(FALSE);
+
+		for (isink = 1; isink <= clb_net[inet].num_sinks; ++isink) {
+			int iblk, ptc, inode, prev_node;
+			iblk = clb_net[inet].node_block[isink];
+			if (block[iblk].type != FILL_TYPE)
+				continue;
+			ptc = clb_net[inet].node_block_pin[isink];
+			inode = get_rr_node_index(block[iblk].x, block[iblk].y, IPIN, ptc, rr_node_indices);
+			assert(inode != OPEN);
+			prev_node = rr_node[inode].prev_node;
+			assert(prev_node != OPEN);
+			if (rr_node_route_inf[prev_node].reserved_for == inet_ref)
+				rr_node_route_inf[prev_node].reserved_for = inet;
+		}
+	}
+
+	reserve_byps();
+
+	if (router_opts->noRoutethru)
+		delete_all_rt();
+
+	/* If global net routing not performed, reserve their IPINs? */
+	if (router_opts->noGlobals) {
+		for (inet = 0; inet < num_nets; ++inet) {
+			if (strcmp(clb_net[inet].name, "gnd") == 0)
+				reserve_net_ipins(inet);
+			else if (strcmp(clb_net[inet].name, "vcc") == 0)
+				reserve_net_ipins(inet);
+		}
+	}
+
+}
+
+/* Block route-throughs for LUT sites in user circuit
+ * and remove A6 IPIN (from being pinswap-pable) for
+ * fractured LUTs since A6 must be tied to vcc */
+static void
+reserve_slice_ipins(void) {
+	int iblk;
+	int inet_vcc;
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+
+	for (inet_vcc = 0; inet_vcc < num_nets; ++inet_vcc) {
+		if (strcmp(clb_net[inet_vcc].name, "vcc") == 0)
+			break;
+	}
+	assert(inet_vcc < num_nets);
+
+	for (iblk = 0; iblk < num_blocks; ++iblk)
+	{
+		int slice_mode;
+		int bx, by, bz;
+		int imode;
+		int num_bles, ible;
+
+		if (block[iblk].type != FILL_TYPE)
+			continue;
+
+		//assert(block[iblk].pb->pb_graph_node->pb_type->num_modes == 3);
+
+		bx = block[iblk].x;
+		by = block[iblk].y;
+		bz = block[iblk].z;
+
+		assert(block[iblk].pb->child_pbs);
+		assert(block[iblk].pb->child_pbs[0]);
+
+		imode = block[iblk].pb->mode;
+		//if (strcmp(block[iblk].pb->pb_graph_node->pb_type->modes[imode].pb_type_children->name, "ble6") != 0)
+		//	continue;
+		num_bles = block[iblk].pb->pb_graph_node->pb_type->modes[imode].pb_type_children->num_pb;
+		for (ible = 0; ible < num_bles; ++ible)
+		{
+			const char *bleModeName;
+
+			if (!block[iblk].pb->child_pbs[0][ible].child_pbs)
+				continue;
+
+			imode = block[iblk].pb->child_pbs[0][ible].mode;
+			bleModeName = block[iblk].pb->child_pbs[0][ible].pb_graph_node->pb_type->modes[imode].name;
+			if (strcmp(bleModeName, "O6LUT") == 0) {
+				int lut_in, lut_out;
+				for (lut_in = 0; lut_in < 6; ++lut_in) {
+					for (lut_out = 0; lut_out < 3; ++lut_out) {
+						delete_rt(bx, by, bz*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in, 
+								bz*PINS_PER_SLICEL + ible*OPINS_PER_BLE + PTC_SLICEL_A + lut_out);
+					}
+				}
+			}
+			else {
+				int num_flut, iflut;
+				int lut_in, lut_out;
+				assert(strncmp(bleModeName, "O6O5LUT", strlen("O6O5LUT")) == 0);
+				lut_in = 0;
+				lut_out = 0;
+				/* Delete A6->A route through */
+				delete_rt(bx, by, bz*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in, 
+						bz*PINS_PER_SLICEL + ible*OPINS_PER_BLE + PTC_SLICEL_A + lut_out);
+
+				num_flut = block[iblk].pb->child_pbs[0][ible].child_pbs[0][0].pb_graph_node->pb_type->num_pb;
+				for (iflut = 0; iflut < num_flut; ++iflut) {
+					if (!block[iblk].pb->child_pbs[0][ible].child_pbs[0][iflut].parent_pb)
+						continue;
+
+					if (iflut == 0) {
+						/* Delete A5:A1 -> A RTs too */
+						lut_out = 0;
+						for (lut_in = 1; lut_in < 6; ++lut_in) {
+							delete_rt(bx, by, bz*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in, 
+									bz*PINS_PER_SLICEL + ible*OPINS_PER_BLE + PTC_SLICEL_A + lut_out);
+						}
+					}
+					else {
+						assert(iflut == 1);
+						lut_in = PTC_SLICEL_A6_VCCONLY;
+						// Reserve A6 IPIN if O6 is not used (to prevent routethru)
+						reserve_ipin_and_delete_other_edges(bx, by, bz*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in, inet_vcc);
+					}
+				}	
+			}
+		}
+	}
+}
+
+void delete_all_rt(void) {
+	int x, y;
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+	for (y = 0; y <= ny+1; ++y) {
+		for (x = 0; x <=  nx+1; ++x) {
+			int z, ible;
+			if (grid[x][y].type != FILL_TYPE)
+				continue;
+			for (z = 0; z < 2; ++z) {
+				for (ible = 0; ible < 4; ++ible) {
+					int lut_in, lut_out;
+					for (lut_in = 0; lut_in < 6; ++lut_in) {
+						for (lut_out = 0; lut_out < 3; ++lut_out) {
+							delete_rt(x, y, z*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in, 
+									z*PINS_PER_SLICEL + ible*OPINS_PER_BLE + PTC_SLICEL_A + lut_out);
+						}
+					}
+				}
+			}
+
+		}
+	}
+}
+
+
+static int
+add_sink(int iblk, int inet, int ptc)
+{
+	int num_sinks;
+	assert(inet != OPEN);
+	num_sinks = clb_net[inet].num_sinks;
+	clb_net[inet].node_block = (int*)realloc(clb_net[inet].node_block, (num_sinks+2)*sizeof(int));
+	clb_net[inet].node_block[num_sinks+1] = iblk;
+	clb_net[inet].node_block_pin = (int*)realloc(clb_net[inet].node_block_pin, (num_sinks+2)*sizeof(int));
+	clb_net[inet].node_block_pin[num_sinks+1] = ptc;
+	++clb_net[inet].num_sinks;
+	//assert(block[iblk].pb->rr_graph[ptc].net_num == OPEN);
+	//block[iblk].pb->rr_graph[ptc].net_num = clb_to_vpack_net_mapping[inet];
+	ptc %= block[iblk].type->num_pins / block[iblk].type->capacity;
+	return block[iblk].pb->rr_graph[ptc].net_num;
+}
+
+static void
+connect_vcc_to_A6(int inet_vcc, int iblk) {
+	int bz;
+	int imode;
+	int num_bles, ible;
+
+	assert(strcmp(block[iblk].pb->pb_graph_node->pb_type->name, "SLICEL") == 0);
+	//assert(block[iblk].pb->pb_graph_node->pb_type->num_modes == 3);
+
+	assert(block[iblk].pb->child_pbs);
+	assert(block[iblk].pb->child_pbs[0]);
+
+	bz = block[iblk].z;
+
+	imode = block[iblk].pb->mode;
+	if (strcmp(block[iblk].pb->pb_graph_node->pb_type->modes[imode].pb_type_children->name, "ble6") != 0)
+		return;
+
+	num_bles = block[iblk].pb->pb_graph_node->pb_type->modes[imode].pb_type_children->num_pb;
+	for (ible = 0; ible < num_bles; ++ible)
+	{
+		const char *bleModeName;
+
+		if (!block[iblk].pb->child_pbs[0][ible].child_pbs)
+			continue;
+
+		imode = block[iblk].pb->child_pbs[0][ible].mode;
+		bleModeName = block[iblk].pb->child_pbs[0][ible].pb_graph_node->pb_type->modes[imode].name;
+		if (strncmp(bleModeName, "O6O5LUT", strlen("O6O5LUT")) == 0) {
+			boolean O6used = FALSE;
+			int num_flut, iflut;
+			num_flut = block[iblk].pb->child_pbs[0][ible].child_pbs[0][0].pb_graph_node->pb_type->num_pb;
+			for (iflut = 0; iflut < num_flut; ++iflut)
+			{
+				if (!block[iblk].pb->child_pbs[0][ible].child_pbs[0][iflut].parent_pb)
+					continue;
+
+				if (iflut == 0) {
+					O6used = TRUE;
+				}
+				/* If O5 is used, connect A6 to VCC */
+				else {
+					int lut_in;
+					int net_num;
+					assert(iflut == 1);
+					if (O6used) {
+						lut_in = PTC_SLICEL_A6_VCCONLY;
+						net_num = add_sink(iblk, inet_vcc, bz*PINS_PER_SLICEL + ible*IPINS_PER_BLE + lut_in);
+						assert(net_num == OPEN);
+					}
+				}
+			}
+		}
+		else {
+			assert(strcmp(bleModeName, "O6LUT") == 0);
+		}
+	}
+}
+
+static void
+connect_gnd_vcc_to_BRAM(int inet_gnd, int inet_vcc, int iblk) {
+	int num_slices;
+	int imode;
+	char *modeName;
+
+	assert(!strcmp(block[iblk].pb->pb_graph_node->pb_type->name, "RAMB36E1"));
+	//assert(block[iblk].pb->pb_graph_node->pb_type->num_modes == 1);
+
+	num_slices = block[iblk].pb->pb_graph_node->pb_type->modes[0].num_pb_type_children;
+
+	imode = block[iblk].pb->mode;
+	modeName = block[iblk].pb->pb_graph_node->pb_type->modes[imode].name;
+	if (strncmp(modeName, "RAMB36E1", 8) == 0) {
+		int iport, num_ports;
+		int ptc;
+		size_t modeNameLen;
+		boolean singlePort = FALSE;
+
+		assert(num_slices == 1);
+
+		modeNameLen = strlen(modeName);
+		if (strncmp(modeName+modeNameLen-3, "_sp", 3) == 0)
+			singlePort = TRUE;
+
+		num_ports = block[iblk].type->pb_type->num_ports;
+		ptc = 0;
+		for (iport = 0; iport < num_ports; ++iport) {
+			int net_num = OPEN;
+			char *portName = block[iblk].type->pb_type->ports[iport].name;
+			int num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+
+			/* Tie off EN{ARD,BWR}{L,U} to vcc */
+			if (strcmp(portName, "ENARDENL") == 0
+				|| strcmp(portName, "ENARDENU") == 0
+				|| strcmp(portName, "ENBWRENL") == 0
+				|| strcmp(portName, "ENBWRENU") == 0) {
+				assert(num_pins == 1);
+				net_num = add_sink(iblk, inet_vcc, ptc);
+			}
+			/* Tie off all ADDR unused LSBs to vcc */
+			else if (strcmp(portName, "ADDRARDADDRL") == 0
+					|| strcmp(portName, "ADDRBWRADDRL") == 0) {
+				int ipin;
+				int not_open_from = -1;
+				assert(num_pins == 16);
+				for (ipin = 0; ipin < num_pins-1; ++ipin) {
+					if (not_open_from < 0) {
+						if (block[iblk].nets[ptc+ipin] != OPEN)
+							not_open_from = ipin;
+					}
+					else
+						assert(block[iblk].nets[ptc+ipin] != OPEN);
+				}
+				assert(block[iblk].nets[ptc+num_pins-1] == OPEN);
+				net_num = add_sink(iblk, inet_vcc, ptc+num_pins-1);
+				assert(net_num == OPEN);
+				for (ipin = 0; ipin < not_open_from; ++ipin) {
+					net_num = add_sink(iblk, inet_vcc, ptc+ipin);
+					assert(net_num == OPEN);
+				}
+
+				if (strcmp(portName, "ADDRARDADDRL") == 0)
+					assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "ADDRARDADDRU") == 0);
+				else if (strcmp(portName, "ADDRBWRADDRL") == 0)
+					assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "ADDRBWRADDRU") == 0);
+				else assert(FALSE);
+
+				assert(block[iblk].type->pb_type->ports[iport+1].num_pins == 15);
+
+				/* Then copy ADDRARDADDRL into ADDRARDADDRU */
+				for (ipin = 0; ipin < not_open_from; ++ipin) {
+					assert(block[iblk].nets[ptc+num_pins+ipin] == OPEN);
+					net_num = add_sink(iblk, inet_vcc, ptc+num_pins+ipin);
+					assert(net_num == OPEN);
+				}
+			}
+			/* Tie off various REG/RST to gnd */
+			else if (strcmp(portName, "REGCLKARDRCLKL") == 0
+				|| strcmp(portName, "REGCLKARDRCLKU") == 0 
+				|| strcmp(portName, "REGCLKBL") == 0
+				|| strcmp(portName, "REGCLKBU") == 0
+				|| strcmp(portName, "REGCEAREGCEL") == 0
+				|| strcmp(portName, "REGCEAREGCEU") == 0
+				|| strcmp(portName, "REGCEBL") == 0
+				|| strcmp(portName, "REGCEBU") == 0
+				|| strcmp(portName, "RSTRAMARSTRAMLRST") == 0
+				|| strcmp(portName, "RSTRAMARSTRAMU") == 0
+				|| strcmp(portName, "RSTRAMBL") == 0
+				|| strcmp(portName, "RSTRAMBU") == 0
+				|| strcmp(portName, "RSTREGARSTREGL") == 0
+				|| strcmp(portName, "RSTREGARSTREGU") == 0
+				|| strcmp(portName, "RSTREGBL") == 0
+				|| strcmp(portName, "RSTREGBU") == 0
+				) {
+				assert(num_pins == 1);
+				net_num = add_sink(iblk, inet_gnd, ptc);
+			}
+			/* If single port, tie off WEAL to gnd 
+			 * then fix_bram_connections() will copy into WEAU */
+			else if (singlePort && strcmp(portName, "WEAL") == 0) {
+				int ipin;
+				assert(num_pins == 4);
+				for (ipin = 0; ipin < num_pins; ++ipin) {
+					net_num = add_sink(iblk, inet_gnd, ptc+ipin);
+					assert(net_num == OPEN);
+				}
+			}
+			else 
+			assert(net_num == OPEN);
+			ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+		}
+	}
+	else if (strcmp(modeName, "RAMB18E1x2") == 0) {
+		int iport, num_ports;
+		int islice;
+		int ptc;
+
+		assert(num_slices == 1);
+
+		num_slices = block[iblk].pb->child_pbs[0][0].pb_graph_node->pb_type->num_pb;
+		for (islice = 0; islice < num_slices; ++islice) {
+			if (!block[iblk].pb->child_pbs[0][islice].child_pbs)
+				continue;
+
+			num_ports = block[iblk].type->pb_type->num_ports;
+			ptc = 0;
+			for (iport = 0; iport < num_ports; ++iport) {
+				int net_num = OPEN;
+				char *portName = block[iblk].type->pb_type->ports[iport].name;
+				int num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+
+				/* Tie off EN{ARD,BWR}EN to vcc */
+				if ((islice == 0 && 
+					(strcmp(portName, "s0_ENARDEN") == 0
+					|| strcmp(portName, "s0_ENBWREN") == 0)) ||
+					(islice == 1 && 
+					(strcmp(portName, "s1_ENARDEN") == 0
+					|| strcmp(portName, "s1_ENBWREN") == 0))) {
+					assert(num_pins == 1);
+					net_num = add_sink(iblk, inet_vcc, ptc);
+				}
+				/* Tie off unused LSBs in ADDR{ARD,BWR}ADDR to vcc */
+				else if ((islice == 0 && 
+					(strcmp(portName, "s0_ADDRARDADDR") == 0
+					|| strcmp(portName, "s0_ADDRBWRADDR") == 0)) ||
+					(islice == 1 && 
+					(strcmp(portName, "s1_ADDRARDADDR") == 0
+					|| strcmp(portName, "s1_ADDRBWRADDR") == 0))) {
+					// Tie off all unused LSBs to vcc
+					int ipin;
+					int not_open_from = -1;
+					assert(num_pins == 14);
+					for (ipin = 0; ipin < num_pins; ++ipin) {
+						if (not_open_from < 0) {
+							if (block[iblk].nets[ptc+ipin] != OPEN)
+								not_open_from = ipin;
+						}
+						/*else
+							assert(block[iblk].nets[ptc+ipin] != OPEN);*/
+					}
+					for (ipin = 0; ipin < not_open_from; ++ipin) {
+						net_num = add_sink(iblk, inet_vcc, ptc+ipin);
+						assert(net_num == OPEN);
+					}
+				}
+				/* Tie off ADDR{A,B}TIEHIGH to vcc */
+				else if ((islice == 0 && 
+					(strcmp(portName, "s0_ADDRATIEHIGH") == 0
+					|| strcmp(portName, "s0_ADDRBTIEHIGH") == 0)) ||
+					(islice == 1 && 
+					(strcmp(portName, "s1_ADDRATIEHIGH") == 0
+					|| strcmp(portName, "s1_ADDRBTIEHIGH") == 0))) {
+					int ipin;
+					assert(num_pins == 2);
+					for (ipin = 0; ipin < num_pins; ++ipin) {
+						net_num = add_sink(iblk, inet_vcc, ptc+ipin);
+						assert(net_num == OPEN);
+					}
+				}
+				/* Tie off various REG/RST to gnd */
+				else if ((islice == 0 && 
+					(strcmp(portName, "s0_REGCLKARDRCLK") == 0
+					|| strcmp(portName, "s0_REGCLKB") == 0
+					|| strcmp(portName, "s0_REGCEAREGCE") == 0
+					|| strcmp(portName, "s0_REGCEB") == 0
+					|| strcmp(portName, "s0_RSTRAMARSTRAM") == 0
+					|| strcmp(portName, "s0_RSTRAMB") == 0
+					|| strcmp(portName, "s0_RSTREGARSTREG") == 0
+					|| strcmp(portName, "s0_RSTREGB") == 0
+					)) ||
+					(islice == 1 &&
+					(strcmp(portName, "s1_REGCLKARDRCLK") == 0
+					|| strcmp(portName, "s1_REGCLKB") == 0
+					|| strcmp(portName, "s1_REGCEAREGCE") == 0
+					|| strcmp(portName, "s1_REGCEB") == 0
+					|| strcmp(portName, "s1_RSTRAMARSTRAM") == 0
+					|| strcmp(portName, "s1_RSTRAMB") == 0
+					|| strcmp(portName, "s1_RSTREGARSTREG") == 0
+					|| strcmp(portName, "s1_RSTREGB") == 0
+					))) {
+					assert(num_pins == 1);
+					net_num = add_sink(iblk, inet_gnd, ptc);
+				}
+				/* In RAMB18 mode, WEBWE[7:4] are always tied off to gnd */
+				else if ((islice == 0 && strcmp(portName, "s0_WEBWE") == 0) ||
+						(islice == 1 && strcmp(portName, "s1_WEBWE") == 0)) {
+					int ipin;
+					assert(num_pins == 8);
+					for (ipin = 4; ipin < num_pins; ++ipin) {
+						net_num = add_sink(iblk, inet_gnd, ptc+ipin);
+						assert(net_num == OPEN);
+					}
+				}
+				assert(net_num == OPEN);
+				ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+			}
+		}
+	}
+	else {
+		vpr_printf(TIO_MESSAGE_ERROR, "RAMB36 mode %s not recognised!\n", modeName);
+		exit(1);
+	}
+}
+
+static void
+connect_gnd_vcc_to_DSP(int inet_gnd, int inet_vcc, int iblk) {
+	int num_slices;
+	int iport, num_ports;
+	int imode;
+	int ptc;
+
+	assert(!strcmp(block[iblk].pb->pb_graph_node->pb_type->name, "DSP48E1"));
+	assert(block[iblk].pb->pb_graph_node->pb_type->num_modes == 1);
+
+	imode = block[iblk].pb->mode;
+	assert(imode == 0);
+
+	num_slices = block[iblk].pb->pb_graph_node->pb_type->modes[imode].num_pb_type_children;
+	assert(num_slices == 4);
+
+	assert(strcmp(block[iblk].pb->child_pbs[0][0].pb_graph_node->pb_type->name, "mult_25x18") == 0);
+	//assert(block[iblk].pb->child_pbs[0][0].pb_graph_node->pb_type->num_modes == 1);
+
+	num_slices = block[iblk].pb->child_pbs[0][0].pb_graph_node->pb_type->num_pb;
+	assert(num_slices == 1);
+	assert(block[iblk].pb->child_pbs[0]);
+
+	num_ports = block[iblk].type->pb_type->num_ports;
+	ptc = block[iblk].z * block[iblk].type->num_pins / block[iblk].type->capacity;
+	for (iport = 0; iport < num_ports; ++iport) {
+		int net_num = OPEN;
+		char *portName = block[iblk].type->pb_type->ports[iport].name;
+		if (strcmp(portName, "CEA1") == 0
+			|| strcmp(portName, "CEA2") == 0 
+			|| strcmp(portName, "CEB1") == 0
+			|| strcmp(portName, "CEB2") == 0
+			|| strcmp(portName, "CEM") == 0
+			|| strcmp(portName, "CEP") == 0) {
+			net_num = add_sink(iblk, inet_gnd, ptc);
+		}
+		else if (strcmp(portName, "INMODE") == 0) {
+			assert(block[iblk].type->pb_type->ports[iport].num_pins == 5);
+			net_num = add_sink(iblk, inet_vcc, ptc + 2);
+
+			net_num = add_sink(iblk, inet_gnd, ptc + 0);
+			net_num = add_sink(iblk, inet_gnd, ptc + 1);
+			net_num = add_sink(iblk, inet_gnd, ptc + 3);
+			net_num = add_sink(iblk, inet_gnd, ptc + 4);
+		}
+		else if (strcmp(portName, "OPMODE") == 0) {
+			assert(block[iblk].type->pb_type->ports[iport].num_pins == 7);
+			net_num = add_sink(iblk, inet_vcc, ptc + 0);
+			net_num = add_sink(iblk, inet_vcc, ptc + 2);
+
+			net_num = add_sink(iblk, inet_gnd, ptc + 1);
+			net_num = add_sink(iblk, inet_gnd, ptc + 3);
+			net_num = add_sink(iblk, inet_gnd, ptc + 4);
+			net_num = add_sink(iblk, inet_gnd, ptc + 5);
+			net_num = add_sink(iblk, inet_gnd, ptc + 6);
+		}
+		assert(net_num == OPEN);
+		ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+	}
+}
+
+static int 
+add_net(const char *name) {
+	clb_net = (struct s_net*)realloc(clb_net, sizeof(struct s_net)*(num_nets+1));
+	clb_net[num_nets].name = my_strdup(name);
+	clb_net[num_nets].is_global = FALSE;
+
+	clb_net[num_nets].num_sinks = 0;
+	clb_net[num_nets].node_block = (int*)malloc(sizeof(int));
+	clb_net[num_nets].node_block[0] = OPEN;
+	clb_net[num_nets].node_block_port = NULL;
+	clb_net[num_nets].node_block_pin = (int*)malloc(sizeof(int));
+	clb_net[num_nets].node_block_pin[0] = OPEN;
+	return num_nets++;
+}
+
+static void
+connect_gnd_vcc(int inet_vcc, int inet_gnd) {
+	int iblk;
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+	for (iblk = 0; iblk < num_blocks; ++iblk)
+	{
+		if (block[iblk].type == FILL_TYPE) {
+			connect_vcc_to_A6(inet_vcc, iblk);
+		}
+		else if (strcmp(block[iblk].type->name, "RAMB36E1") == 0) {
+			connect_gnd_vcc_to_BRAM(inet_gnd, inet_vcc, iblk);
+		}
+		else if (strcmp(block[iblk].type->name, "DSP48E1") == 0) {
+			connect_gnd_vcc_to_DSP(inet_gnd, inet_vcc, iblk);
+		}
+	}
+}
+
+static void
+reserve_net_ipins(int inet) {
+	int isink, num_sinks;
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+	num_sinks = clb_net[inet].num_sinks;
+	for (isink = 1; isink <= num_sinks; ++isink) {
+		int iblk, ptc;
+		iblk = clb_net[inet].node_block[isink];
+		if (block[iblk].type != FILL_TYPE)
+			continue;
+		ptc = clb_net[inet].node_block_pin[isink];
+		ptc %= FILL_TYPE->num_pins / FILL_TYPE->capacity;
+		/* Only if [ABCD] LUT */
+		if (ptc / IPINS_PER_BLE > 3)
+			continue;
+
+		/* Only if [ABCD][1-6] */
+		if (ptc % IPINS_PER_BLE < PTC_SLICEL_A6 
+				|| ptc % IPINS_PER_BLE > PTC_SLICEL_A1)
+			continue;
+
+		ptc = clb_net[inet].node_block_pin[isink];
+		reserve_ipin_and_delete_other_edges(block[iblk].x, block[iblk].y, ptc, inet);
+	}
+}
+
+static void
+reserve_byps(void) {
+	int inet;
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+	for (inet = 0; inet < num_nets; ++inet) {
+		int isink, num_sinks;
+
+		/* Ignore vcc/gnd nets, because their sinks have
+		 * been split into GLOBAL_LOGIC[01] */
+		if (strcmp(clb_net[inet].name, "vcc") == 0
+				|| strcmp(clb_net[inet].name, "gnd") == 0)
+			continue;
+
+		num_sinks = clb_net[inet].num_sinks;
+		for (isink = 1; isink <= num_sinks; ++isink) {
+			int iblk, ptc;
+			int ipin_node, clb_x_node, byp_b_node, byp_node;
+
+			iblk = clb_net[inet].node_block[isink];
+			if (block[iblk].type != FILL_TYPE)
+				continue;
+			ptc = clb_net[inet].node_block_pin[isink];
+			ptc %= FILL_TYPE->num_pins / FILL_TYPE->capacity;
+			/* Only if [ABCD] LUT */
+			if (ptc / IPINS_PER_BLE > 3)
+				continue;
+
+			/* Only if [ABCD]X */
+			if (ptc % IPINS_PER_BLE != PTC_SLICEL_AX)
+				continue;
+
+			ptc = clb_net[inet].node_block_pin[isink];
+			ipin_node = get_rr_node_index(block[iblk].x, block[iblk].y, IPIN, ptc, rr_node_indices);
+			assert(ipin_node != OPEN);
+
+			clb_x_node = rr_node[ipin_node].prev_node;
+			assert(clb_x_node != OPEN);
+
+			byp_b_node = rr_node[clb_x_node].prev_node;
+			assert(byp_b_node != OPEN);
+
+			byp_node = rr_node[byp_b_node].prev_node;
+			assert(byp_node != OPEN);
+
+			assert(rr_node[byp_node].num_edges == 2);
+
+			//if (rr_node[byp_node].edges[0] != byp_b_node) {
+			//	assert(rr_node[byp_node].edges[1] == byp_b_node);
+			//	rr_node[byp_node].edges[0] = byp_b_node;
+			//}
+			//rr_node[byp_node].num_edges = 1;
+
+			/* Reserve this BYP node exclusively for this
+			 * net only */
+			rr_node_route_inf[byp_node].reserved_for = inet;
+		}
+	}
+}
+
+
+void
+split_gnd_vcc_nets(struct s_router_opts *router_opts) {
+	int inet;
+	int inet_vcc;
+	int inet_gnd;
+
+	inet_vcc = inet_gnd = OPEN;
+	for (inet = 0; inet < num_nets; ++inet) {
+		if (strcmp(clb_net[inet].name, "vcc") == 0) inet_vcc = inet;
+		else if (strcmp(clb_net[inet].name, "gnd") == 0) inet_gnd = inet;
+		if (inet_vcc != OPEN && inet_gnd != OPEN) break;
+	}
+	if (inet == num_nets) {
+		if (inet_vcc == OPEN) {
+			inet_vcc = add_net("vcc");
+			clb_net[inet_vcc].is_global = TRUE;
+		}
+		if (inet_gnd == OPEN) {
+			inet_gnd = add_net("gnd");
+			clb_net[inet_gnd].is_global = TRUE;
+		}
+	}
+	assert(inet_vcc != OPEN && inet_gnd != OPEN);
+	assert(clb_net[inet_vcc].is_global);
+	assert(clb_net[inet_gnd].is_global);
+
+	/* First, add all fractured LUTs' A6 pin
+	 * to VCC before splitting */
+	connect_gnd_vcc(inet_vcc, inet_gnd);
+
+	assert(strcmp(FILL_TYPE->name, "SLICEL") == 0);
+
+	if (!router_opts->noGlobals) {
+		std::map<std::pair<char,std::pair<int,int> >,int> xy2net;
+		typedef std::map<std::pair<char,std::pair<int,int> >,int>::const_iterator t_it;
+
+		for (inet = 0; inet < num_nets; ++inet) {
+			char *port_name, *net_name;
+			char vcc_not_gnd;
+			if (!clb_net[inet].is_global)
+				continue;
+			port_name = NULL;
+			vcc_not_gnd = -1;
+			if (inet == inet_gnd) {
+				port_name = "GND_WIRE";
+				net_name = "GLOBAL_LOGIC0";
+				vcc_not_gnd = 0;
+			}
+			else if (inet == inet_vcc) {
+				port_name = "VCC_WIRE";
+				net_name = "GLOBAL_LOGIC1";
+				vcc_not_gnd = 1;
+			}
+			if (port_name) {
+				int isink;
+				int num_sinks = clb_net[inet].num_sinks;
+				int iblk = clb_net[inet].node_block[0];
+				int ipin;
+				if (iblk != OPEN) {
+					ipin = clb_net[inet].node_block_pin[0] 
+						% (block[iblk].type->num_pins / block[iblk].type->capacity);
+					assert(block[iblk].pb->rr_graph[ipin].net_num == clb_to_vpack_net_mapping[inet]);
+				}
+				//block[clb_net[inet].node_block[0]].pb->rr_graph[clb_net[inet].node_block_pin[0]].net_num = OPEN;
+
+				for (isink = 1; isink <= num_sinks; ++isink) {
+					int jnet, ptc;
+					iblk = clb_net[inet].node_block[isink];
+					assert(iblk != OPEN);
+
+					int x = block[iblk].x;
+					int y = block[iblk].y;
+					int z = block[iblk].z;
+					t_it it = xy2net.find(std::make_pair(vcc_not_gnd,std::make_pair(x,y)));
+					if (it == xy2net.end()) {
+						int iport, num_ports;
+						char buf[32];
+
+						sprintf(buf, "%s_X%dY%d", net_name, x, y);
+						jnet = add_net(buf);
+
+						/* Find the lowest z block at this grid to host GND/VCC wire */
+						for (; z >= 0; --z) {
+							if (grid[x][y].blocks[z] != OPEN)
+								clb_net[jnet].node_block[0] = grid[x][y].blocks[z];
+						}
+						++z;
+
+						/* Find the ptc for the appropriate wire */
+						num_ports = block[iblk].type->pb_type->num_ports;
+						ptc = 0;
+						for (iport = 0; iport < num_ports; ++iport) {
+							if (!strcmp(block[iblk].type->pb_type->ports[iport].name, port_name))
+								break;
+							ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+						}
+						assert(iport != num_ports);
+						assert(block[iblk].type->class_inf[iport].num_pins == 1);
+
+						assert(z == 0);
+						ptc += z * (block[iblk].type->num_pins / block[iblk].type->capacity);
+						clb_net[jnet].node_block_pin[0] = ptc;
+						//printf("%s at (%d,%d,%d)\n", buf, block[iblk].x, block[iblk].y, ptc);
+
+						// Necessary to prevent reserve_locally_used_opins() from
+						// occupying the const outpin
+						assert(block[clb_net[jnet].node_block[0]].nets[ptc] == inet
+							|| block[clb_net[jnet].node_block[0]].nets[ptc] == OPEN);
+						block[clb_net[jnet].node_block[0]].nets[ptc] = jnet;
+
+						xy2net.insert(std::make_pair(std::make_pair(vcc_not_gnd,std::make_pair(x,y)),jnet));
+					}
+					else {
+						jnet = it->second;
+					}
+
+					ptc = clb_net[inet].node_block_pin[isink];
+					if (block[iblk].type == FILL_TYPE
+							&& ptc % (FILL_TYPE->num_pins / FILL_TYPE->capacity) == PTC_SLICEL_CIN) {
+#if defined(__x86_64__)
+						asm("int3");
+#endif
+						assert(FALSE);
+					}
+					add_sink(iblk, jnet, ptc);
+				}
+			}
+		}
+	}
+}
+
+void
+fix_bram_connections(void) {
+	int iblk;
+	for (iblk = 0; iblk < num_blocks; ++iblk) {
+		int num_slices;
+		int imode;
+		char *modeName;
+		if (strcmp(block[iblk].type->name, "RAMB36E1") == 0) {
+			int num_children;
+			assert(!strcmp(block[iblk].pb->pb_graph_node->pb_type->name, "RAMB36E1"));
+
+			num_children = block[iblk].pb->pb_graph_node->pb_type->modes[0].num_pb_type_children;
+
+			imode = block[iblk].pb->mode;
+			modeName = block[iblk].pb->pb_graph_node->pb_type->modes[imode].name;
+
+			if (strncmp(modeName, "RAMB36E1", 6) == 0) {
+				int iport, num_ports;
+				int ptc;
+				size_t modeNameLen;
+				boolean singlePort = FALSE;
+
+				assert(num_children == 1);
+				assert(block[iblk].pb->child_pbs[0][0].child_pbs);
+
+				modeNameLen = strlen(modeName);
+				if (strncmp(modeName+modeNameLen-3, "_sp", 3) == 0)
+					singlePort = TRUE;
+
+				num_ports = block[iblk].type->pb_type->num_ports;
+				ptc = 0;
+				for (iport = 0; iport < num_ports; ++iport) {
+					char *portName = block[iblk].type->pb_type->ports[iport].name;
+					if (strcmp(portName, "DIADI") == 0 || strcmp(portName, "DIBDI") == 0) {
+						/* For the thinnest RAMB36E1 mode, 
+						 * connect the 1 bit input to DI[AB]DI1 as well as 0 
+						 * (which translates to DI[AB]DIU0 */
+						if (strncmp(modeName, "RAMB36E1_32768x1_", strlen("RAMB36E1_32768x1_")) == 0) {
+							int inet, net_num;
+							inet = block[iblk].nets[ptc];
+							assert(inet != OPEN);
+							assert(block[iblk].nets[ptc+16] == OPEN);
+							net_num = add_sink(iblk, inet, ptc+16);
+							assert(net_num == OPEN);
+						}
+					}
+					/* Copy ADDRARDADDRL to U */
+					else if (strcmp(portName, "ADDRARDADDRL") == 0) {
+						int ipin, num_pins1, num_pins2;
+						int inet;
+						int net_num;
+						num_pins1 = block[iblk].type->pb_type->ports[iport].num_pins;
+						//inet = block[iblk].nets[ptc];
+						//assert(inet != OPEN);
+						assert(num_pins1 == 16);
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "ADDRARDADDRU") == 0);
+						num_pins2 = block[iblk].type->pb_type->ports[iport+1].num_pins;
+						assert(num_pins2 == 15);
+
+						/* For the widest mode, copy ADDRARDADDRL from ADDRBWRADDRL */
+						if (strncmp(modeName, "RAMB36E1_512x72_sp", strlen("RAMB36E1_512x72_sp")) == 0) {
+							assert(strcmp(block[iblk].type->pb_type->ports[iport+2].name, "ADDRBWRADDRL") == 0);
+							assert(block[iblk].type->pb_type->ports[iport+2].num_pins == num_pins1);
+							for (ipin = 0; ipin < num_pins1; ++ipin) {
+								assert(block[iblk].nets[ptc+ipin] == OPEN);
+								inet = block[iblk].nets[ptc+num_pins1+num_pins2+ipin];
+								if (inet != OPEN) {
+									net_num = add_sink(iblk, inet, ptc+ipin);
+									assert(net_num == OPEN);
+									block[iblk].nets[ptc+ipin] = inet;
+								}
+							}
+						}
+
+						/* Then copy ADDRARDADDRL into ADDRARDADDRU */
+						for (ipin = 0; ipin < num_pins2; ++ipin) {
+							inet = block[iblk].nets[ptc+ipin];
+							assert(block[iblk].nets[ptc+num_pins1+ipin] == OPEN);
+							if (inet != OPEN) {
+								net_num = add_sink(iblk, inet, ptc+num_pins1+ipin);
+								assert(net_num == OPEN);
+							}
+						}
+						//vpr_printf(TIO_MESSAGE_INFO, "%s\n", portName);
+						ptc += num_pins1;
+						++iport;
+					}
+					/* If dual port, extend ADDRBWRADDRL to U */
+					else if (!singlePort && strcmp(portName, "ADDRBWRADDRL") == 0) {
+						int ipin, num_pins1, num_pins2;
+						int inet;
+						int net_num;
+						num_pins1 = block[iblk].type->pb_type->ports[iport].num_pins;
+						//inet = block[iblk].nets[ptc];
+						//assert(inet != OPEN);
+						assert(num_pins1 == 16);
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "ADDRBWRADDRU") == 0);
+						num_pins2 = block[iblk].type->pb_type->ports[iport+1].num_pins;
+						assert(num_pins2 == 15);
+						for (ipin = 0; ipin < num_pins2; ++ipin) {
+							inet = block[iblk].nets[ptc+ipin];
+							assert(block[iblk].nets[ptc+num_pins1+ipin] == OPEN);
+							if (inet != OPEN) {
+								net_num = add_sink(iblk, inet, ptc+num_pins1+ipin);
+								assert(net_num == OPEN);
+							}
+						}
+						//vpr_printf(TIO_MESSAGE_INFO, "%s\n", portName);
+						ptc += num_pins1;
+						++iport;
+					}
+					/* If dual port, extend WEAL and copy to WEAU */
+					else if (!singlePort && strcmp(portName, "WEAL") == 0) {
+						int ipin, num_pins;
+						int inet;
+						int net_num;
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						inet = block[iblk].nets[ptc];
+						assert(inet != OPEN);
+						assert(num_pins == 4);
+						for (ipin = 1; ipin < num_pins; ++ipin) {
+							assert(block[iblk].nets[ptc+ipin] == OPEN);
+							net_num = add_sink(iblk, inet, ptc+ipin);
+							assert(net_num == OPEN);
+						}
+						assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "WEAU") == 0);
+						ptc += num_pins;
+						++iport;
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 4);
+						for (ipin = 0; ipin < num_pins; ++ipin) {
+							assert(block[iblk].nets[ptc+ipin] == OPEN);
+							net_num = add_sink(iblk, inet, ptc+ipin);
+							assert(net_num == OPEN);
+						}
+						//vpr_printf(TIO_MESSAGE_INFO, "%d:%s %s <-- %s\n", iblk, block[iblk].name, portName, clb_net[inet].name);
+					}
+					/* Extend WEBWEL, and copy into WEBWEU */
+					else if (strcmp(portName, "WEBWEL") == 0) {
+						int ipin, num_pins;
+						int inet;
+						int net_num;
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						inet = block[iblk].nets[ptc];
+						assert(inet != OPEN);
+						assert(num_pins == 8);
+						for (ipin = 1; ipin < num_pins; ++ipin) {
+							assert(block[iblk].nets[ptc+ipin] == OPEN);
+							net_num = add_sink(iblk, inet, ptc+ipin);
+							assert(net_num == OPEN);
+						}
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "WEBWEU") == 0);
+						ptc += num_pins;
+						++iport;
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 8);
+						for (ipin = 0; ipin < num_pins; ++ipin) {
+							assert(block[iblk].nets[ptc+ipin] == OPEN);
+							net_num = add_sink(iblk, inet, ptc+ipin);
+							assert(net_num == OPEN);
+						}
+						//vpr_printf(TIO_MESSAGE_INFO, "%s\n", portName);
+					}
+					/* If dual port, extend ARDCLKL to U and copy into BWR */
+					else if (!singlePort && strcmp(portName, "CLKARDCLKL") == 0) {
+						int num_pins;
+						int inet;
+						int net_num;
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 1);
+						inet = block[iblk].nets[ptc];
+						assert(inet != OPEN);
+						++iport;
+						ptc += num_pins;
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport].name, "CLKARDCLKU") == 0);
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 1);
+						assert(block[iblk].nets[ptc] == OPEN);
+						net_num = add_sink(iblk, inet, ptc);
+						assert(net_num == OPEN);
+						ptc += num_pins;
+						++iport;
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport].name, "CLKBWRCLKL") == 0);
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 1);
+						assert(block[iblk].nets[ptc] == OPEN);
+						net_num = add_sink(iblk, inet, ptc);
+						assert(net_num == OPEN);
+						ptc += num_pins;
+						++iport;
+
+						assert(strcmp(block[iblk].type->pb_type->ports[iport].name, "CLKBWRCLKU") == 0);
+						num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+						assert(num_pins == 1);
+						assert(block[iblk].nets[ptc] == OPEN);
+						net_num = add_sink(iblk, inet, ptc);
+						assert(net_num == OPEN);
+					}
+
+					ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+				}
+			}
+			else if (strncmp(modeName, "RAMB18E1", 8) == 0) {
+				assert(num_children == 1);
+
+				assert(block[iblk].pb->child_pbs[0]);
+				int islice;
+				num_slices = block[iblk].pb->child_pbs[0][0].pb_graph_node->pb_type->num_pb;
+				for (islice = 0; islice < num_slices; ++islice) {
+					int iport, num_ports;
+					int ptc;
+					size_t modeNameLen;
+					boolean singlePort = FALSE;
+
+					if (!block[iblk].pb->child_pbs[0][islice].child_pbs)
+						continue;
+
+					imode = block[iblk].pb->child_pbs[0][islice].mode;
+					modeName = block[iblk].pb->child_pbs[0][islice].pb_graph_node->pb_type->modes[imode].name;
+
+					modeNameLen = strlen(modeName);
+					if (strncmp(modeName+modeNameLen-3, "_sp", 3) == 0)
+						singlePort = TRUE;
+
+
+					num_ports = block[iblk].type->pb_type->num_ports;
+					ptc = 0;
+					for (iport = 0; iport < num_ports; ++iport) {
+						char *portName = block[iblk].type->pb_type->ports[iport].name;
+						if (strcmp(portName, "ADDRARDADDR") == 0) {
+							int ipin, num_pins;
+							int inet;
+							int net_num;
+							num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+							assert(num_pins == 14);
+
+							/* For the widest mode, copy ADDRARDADDR from ADDRBWRADDR */
+							if (strncmp(modeName, "RAMB18E1_512x36_sp", strlen("RAMB18E1_512x36_sp")) == 0) {
+								assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "ADDRBWRADDR") == 0);
+								assert(block[iblk].type->pb_type->ports[iport+1].num_pins == num_pins);
+								for (ipin = 0; ipin < num_pins; ++ipin) {
+									assert(block[iblk].nets[ptc+ipin] == OPEN);
+									inet = block[iblk].nets[ptc+num_pins+ipin];
+									if (inet != OPEN) {
+										net_num = add_sink(iblk, inet, ptc+ipin);
+										assert(net_num == OPEN);
+										block[iblk].nets[ptc+ipin] = inet;
+									}
+								}
+							}
+						}
+						/* If dual port, extend WEA */
+						else if (!singlePort && (
+							(islice == 0 && strcmp(portName, "s0_WEA") == 0) ||
+							(islice == 1 && strcmp(portName, "s1_WEA") == 0))) {
+							int ipin, num_pins;
+							int inet;
+							int net_num;
+							num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+							assert(num_pins == 4);
+							inet = block[iblk].nets[ptc];
+							assert(inet != OPEN);
+							for (ipin = 1; ipin < num_pins; ++ipin) {
+								assert(block[iblk].nets[ptc+ipin] == OPEN);
+								net_num = add_sink(iblk, inet, ptc+ipin);
+								assert(net_num == OPEN);
+							}
+							//vpr_printf(TIO_MESSAGE_INFO, "%s\n", portName);
+						}
+						/* Extend WEBWE */
+						else if ((islice == 0 && strcmp(portName, "s0_WEBWE") == 0) ||
+							(islice == 1 && strcmp(portName, "s1_WEBWE") == 0)) {
+							int ipin, num_pins;
+							int inet;
+							int net_num;
+							num_pins = block[iblk].type->pb_type->ports[iport].num_pins;
+							assert(num_pins == 8);
+							inet = block[iblk].nets[ptc];
+							if (inet != OPEN) {
+								for (ipin = 1; ipin < 4; ++ipin) {
+									assert(block[iblk].nets[ptc+ipin] == OPEN);
+									net_num = add_sink(iblk, inet, ptc+ipin);
+									assert(net_num == OPEN);
+								}
+							}
+							//vpr_printf(TIO_MESSAGE_INFO, "%s\n", portName);
+						}
+						/* If dual port, copy ARDCLK into BWR */
+						else if (!singlePort && 
+							((islice == 0 && strcmp(portName, "s0_CLKARDCLK") == 0) ||
+							(islice == 1 && strcmp(portName, "s1_CLKARDCLK") == 0))) {
+							int ipin, num_pins1, num_pins2;
+							int inet;
+							int net_num;
+							num_pins1 = block[iblk].type->pb_type->ports[iport].num_pins;
+							assert(num_pins1 == 1);
+							inet = block[iblk].nets[ptc];
+							assert(inet != OPEN);
+							if (islice == 0)
+								assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "s0_CLKBWRCLK") == 0);
+							else if (islice == 1)
+								assert(strcmp(block[iblk].type->pb_type->ports[iport+1].name, "s1_CLKBWRCLK") == 0);
+							num_pins2 = block[iblk].type->pb_type->ports[iport+1].num_pins;
+							assert(num_pins2 == 1);
+							for (ipin = 0; ipin < num_pins2; ++ipin) {
+								assert(block[iblk].nets[ptc+num_pins1+ipin] == OPEN);
+								net_num = add_sink(iblk, inet, ptc+num_pins1+ipin);
+								assert(net_num == OPEN);
+							}
+							ptc += num_pins1;
+							++iport;
+						}
+
+						ptc += block[iblk].type->pb_type->ports[iport].num_pins;
+					}
+				}
+				num_slices = block[iblk].pb->pb_graph_node->pb_type->modes[0].num_pb_type_children;
+			}
+		}
+	}
+}
+
+void
+transform_clocks(void) {
+	int inet;
+	for (inet = 0; inet < num_nets; ++inet) {
+		if (!clb_net[inet].is_global)
+			continue;
+		if (strcmp(clb_net[inet].name, "gnd") != 0 &&
+			strcmp(clb_net[inet].name, "vcc") != 0) {
+			clb_net[inet].is_global = FALSE;
+		}
 	}
 }
 

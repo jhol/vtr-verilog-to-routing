@@ -179,7 +179,7 @@ void SetupVPR(INP t_options *Options, INP boolean TimingEnabled,
 	for (i = 0; i < num_types; i++) {
 		if (strcmp(type_descriptors[i].name, "<EMPTY>") == 0) {
 			EMPTY_TYPE = &type_descriptors[i];
-		} else if (strcmp(type_descriptors[i].name, "io") == 0) {
+		} else if (strcmp(type_descriptors[i].name, "IOB") == 0) {
 			IO_TYPE = &type_descriptors[i];
 		} else {
 			for (j = 0; j < type_descriptors[i].num_grid_loc_def; j++) {
@@ -455,6 +455,20 @@ static void SetupRouterOpts(INP t_options Options, INP boolean TimingEnabled,
 			&& !Options.Count[OT_ROUTE]) {
 		if (!Options.Count[OT_TIMING_ANALYZE_ONLY_WITH_NET_DELAY])
 			RouterOpts->doRouting = TRUE;
+	}
+
+	/* EH */
+	RouterOpts->noRoutethru = FALSE;
+	if (Options.Count[OT_NO_ROUTETHRU]) {
+		RouterOpts->noRoutethru = TRUE;
+	}
+	RouterOpts->noReroute = FALSE;
+	if (Options.Count[OT_NO_REROUTE]) {
+		RouterOpts->noReroute = TRUE;
+	}
+	RouterOpts->noGlobals = FALSE;
+	if (Options.Count[OT_NO_GLOBALS]) {
+		RouterOpts->noGlobals = TRUE;
 	}
 
 }

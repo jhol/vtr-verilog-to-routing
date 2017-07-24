@@ -288,6 +288,9 @@ static void load_rr_indexed_data_T_values(int index_start,
 			rr_indexed_data[cost_index].T_linear = OPEN;
 			rr_indexed_data[cost_index].T_quadratic = OPEN;
 			rr_indexed_data[cost_index].C_load = OPEN;
+			iseg = rr_indexed_data[cost_index].seg_index;
+			if (segment_inf[iseg].frequency > 0)
+				vpr_printf(TIO_MESSAGE_WARNING, "cost_index = %d has no segments!\n", cost_index);
 		} else {
 			Rnode = R_total[cost_index] / num_nodes_of_index[cost_index];
 			Cnode = C_total[cost_index] / num_nodes_of_index[cost_index];

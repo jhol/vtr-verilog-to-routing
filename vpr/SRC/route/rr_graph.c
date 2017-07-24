@@ -2,6 +2,7 @@
 #include <math.h>
 #include <assert.h>
 #include <string.h>
+#include <zlib.h>
 #include "util.h"
 #include "vpr_types.h"
 #include "globals.h"
@@ -41,6 +42,19 @@ typedef struct s_clb_to_clb_directs {
 	int to_clb_pin_start_index;
 	int to_clb_pin_end_index;
 } t_clb_to_clb_directs;
+
+static void
+print_rr_node_noedges(FILE * fp,
+		t_rr_node *node,
+		int *edge_length);
+
+static void
+print_rr_node_justedges(FILE * fp,
+		t_rr_node node,
+		int *edge_length);
+
+static void
+dump_rr_graph_vtb(INP const char *arch_file);
 
 /* UDSD Modifications by WMF End */
 
@@ -147,6 +161,8 @@ static void alloc_and_load_rr_clb_source(t_ivec *** L_rr_node_indices);
 
 static t_clb_to_clb_directs *alloc_and_load_clb_to_clb_directs(INP t_direct_inf *directs, INP int num_directs);
 
+static void load_rr_graph(const char *arch_file);
+
 #if 0
 static void load_uniform_opin_switch_pattern_paired(INP int *Fc_out,
 		INP int num_pins,
@@ -198,7 +214,8 @@ void build_rr_graph(INP t_graph_type graph_type, INP int L_num_types,
 		INP int global_route_switch, INP int delayless_switch,
 		INP t_timing_inf timing_inf, INP int wire_to_ipin_switch,
 		INP enum e_base_cost_type base_cost_type, INP t_direct_inf *directs, 
-		INP int num_directs, INP boolean ignore_Fc_0, OUTP int *Warnings) {
+		INP int num_directs, INP boolean ignore_Fc_0, INP const char *arch_file,
+		OUTP int *Warnings) {
 	/* Temp structures used to build graph */
 	int nodes_per_chan, i, j;
 	t_seg_details *seg_details = NULL;
@@ -424,9 +441,19 @@ void build_rr_graph(INP t_graph_type graph_type, INP int L_num_types,
 	rr_graph_externals(timing_inf, segment_inf, num_seg_types, nodes_per_chan,
 			wire_to_ipin_switch, base_cost_type);
 	if (getEchoEnabled() && isEchoFileEnabled(E_ECHO_RR_GRAPH)) {
-		dump_rr_graph(getEchoFileName(E_ECHO_RR_GRAPH));
+		//dump_rr_graph(getEchoFileName(E_ECHO_RR_GRAPH));
 	} else
 		;
+
+	if (getDumpVtbEnabled()) {
+		dump_rr_graph_vtb(arch_file);
+		vpr_printf(TIO_MESSAGE_INFO, "Successfully dumped RRG for VTB.\n");
+		vpr_printf(TIO_MESSAGE_INFO, "Exiting!\n");
+		vpr_printf(TIO_MESSAGE_INFO, "\n");
+		exit(0);
+	}
+
+	load_rr_graph(arch_file);
 
 	check_rr_graph(graph_type, types, L_nx, L_ny, nodes_per_chan, Fs,
 			num_seg_types, num_switches, segment_inf, global_route_switch,
@@ -815,6 +842,7 @@ void free_rr_graph(void) {
 	if(net_rr_terminals != NULL) {
 		free(net_rr_terminals);
 	}
+#if 0
 	for (i = 0; i < num_rr_nodes; i++) {
 		if (rr_node[i].edges != NULL) {
 			free(rr_node[i].edges);
@@ -823,6 +851,8 @@ void free_rr_graph(void) {
 			free(rr_node[i].switches);
 		}
 	}
+#endif
+	free(rr_node[0].edges);
 
 	assert(rr_node_indices);
 	free_rr_node_indices(rr_node_indices);
@@ -863,6 +893,8 @@ void load_net_rr_terminals(t_ivec *** L_rr_node_indices) {
 	t_type_ptr type;
 
 	for (inet = 0; inet < num_nets; inet++) {
+		/* EH: Skip for global nets */
+		if (clb_net[inet].is_global) continue;
 		for (ipin = 0; ipin <= clb_net[inet].num_sinks; ipin++) {
 			iblk = clb_net[inet].node_block[ipin];
 			i = block[iblk].x;
@@ -943,6 +975,9 @@ static void build_rr_sinks_sources(INP int i, INP int j,
 		return;
 
 	type = L_grid[i][j].type;
+	/* EH: Do not build sources/sinks for EMPTY grid pos */
+	if (type == EMPTY_TYPE)
+		return;
 	num_class = type->num_class;
 	class_inf = type->class_inf;
 	num_pins = type->num_pins;
@@ -1194,11 +1229,15 @@ static void build_rr_xchan(INP int i, INP int j,
 		length = iend - istart + 1;
 		L_rr_node[inode].R = length * seg_details[itrack].Rmetal;
 		L_rr_node[inode].C = length * seg_details[itrack].Cmetal;
+		assert(L_rr_node[inode].R == length * seg_details[itrack].Rmetal);
+		assert(L_rr_node[inode].C == length * seg_details[itrack].Cmetal);
+
 
 		L_rr_node[inode].ptc_num = itrack;
 		L_rr_node[inode].type = CHANX;
 		L_rr_node[inode].direction = seg_details[itrack].direction;
 		L_rr_node[inode].drivers = seg_details[itrack].drivers;
+		assert(L_rr_node[inode].drivers == seg_details[itrack].drivers);
 	}
 }
 
@@ -1287,11 +1326,14 @@ static void build_rr_ychan(INP int i, INP int j,
 		length = iend - istart + 1;
 		L_rr_node[inode].R = length * seg_details[itrack].Rmetal;
 		L_rr_node[inode].C = length * seg_details[itrack].Cmetal;
+		assert(L_rr_node[inode].R == length * seg_details[itrack].Rmetal);
+		assert(L_rr_node[inode].C == length * seg_details[itrack].Cmetal);
 
 		L_rr_node[inode].ptc_num = itrack;
 		L_rr_node[inode].type = CHANY;
 		L_rr_node[inode].direction = seg_details[itrack].direction;
 		L_rr_node[inode].drivers = seg_details[itrack].drivers;
+		assert(L_rr_node[inode].drivers == seg_details[itrack].drivers);
 	}
 }
 
@@ -1682,12 +1724,13 @@ static void check_all_tracks_reach_pins(t_type_ptr type,
 		}
 	}
 
+	/* EH: Suppressed for Xilinx RRG
 	for (itrack = 0; itrack < nodes_per_chan; itrack++) {
 		if (num_conns_to_track[itrack] <= 0) {
 			vpr_printf(TIO_MESSAGE_ERROR, "check_all_tracks_reach_pins: Track %d does not connect to any CLB %ss.\n", 
 				itrack, (ipin_or_opin == DRIVER ? "OPIN" : "IPIN"));
 		}
-	}
+	}*/
 
 	free(num_conns_to_track);
 }
@@ -1782,6 +1825,105 @@ alloc_and_load_track_to_pin_lookup(INP int ****pin_to_track_map, INP int *Fc,
 	return track_to_pin_lookup;
 }
 
+/* Prints all the data about node inode to file fp.                    */
+static void
+print_rr_node_noedges(FILE * fp,
+		t_rr_node *node,
+		int *edge_length)
+{
+	/* For all OPINs, override and write-out one (dummy) outgoing edge */
+	if (node->type == OPIN) {
+		if (node->num_edges == 0) {
+			assert(node->edges == NULL);
+			node->edges = (int*)malloc(sizeof(int));
+			assert(node->switches == NULL);
+			node->switches = (short*)malloc(sizeof(short));
+		}
+		node->num_edges = 0;
+		//node->edges[0] = OPEN;
+		//node->switches[0] = OPEN;
+	}
+
+	//assert(node.pb_graph_pin == NULL);
+	assert(node->tnode == NULL);
+	fwrite(node, sizeof(t_rr_node), 1, fp);
+}
+
+static void
+print_rr_node_justedges(FILE * fp,
+		t_rr_node node,
+		int *edge_length)
+{
+	fwrite(node.edges, sizeof(int), node.num_edges, fp);
+	fwrite(node.switches, sizeof(short), node.num_edges, fp);
+	*edge_length += (sizeof(int)+sizeof(short)) * node.num_edges;
+}
+
+static void
+dump_rr_graph_vtb(INP const char *arch_file)
+{
+
+	int size, inode, num_nodes;
+	int edge_length;
+	FILE *fp;
+
+	char *file_name = (char*)malloc(strlen(arch_file)+1);
+	strcpy(file_name, arch_file);
+	strcpy(file_name+strlen(arch_file)-3, "vpr");
+
+	fp = my_fopen(file_name, "wb", 0);
+	assert(fp); 
+	free(file_name);
+
+	/* Size of an RR node */
+	size = sizeof(t_rr_node);
+	fwrite(&size, sizeof(int), 1, fp);
+	/* Number of nodes */
+	fwrite(&inode, sizeof(int), 1, fp);
+	/* Size of edge/switch data */
+	fwrite(&inode, sizeof(int), 1, fp);
+
+	num_nodes = 0;
+	bool chan = false;
+	for(inode = 0; inode < num_rr_nodes; inode++)
+	{
+		t_rr_type rr_type;
+		rr_type = rr_node[inode].type;
+
+		if (rr_type == SOURCE || rr_type == SINK || rr_type == IPIN || rr_type == OPIN) 
+		{
+			assert(!chan);
+			print_rr_node_noedges(fp, &rr_node[inode], &edge_length);
+			num_nodes++;
+		}
+		else
+		{
+			chan = true;
+			//break;
+		}
+	}
+
+	edge_length = 0;
+	for(inode = 0; inode < num_nodes; inode++)
+	{
+		print_rr_node_justedges(fp, rr_node[inode], &edge_length);
+	}
+
+	for(inode = 0; inode < num_nodes; inode++)
+	{
+		const int x = rr_node[inode].xlow;
+		const int y = rr_node[inode].ylow;
+		//const t_type_ptr type = grid[x][y].type;
+		fwrite(&grid[x][y].type->index, sizeof(int), 1, fp);
+	}
+
+	fseek(fp, sizeof(int), SEEK_SET);
+	fwrite(&num_nodes, sizeof(int), 1, fp);
+	fwrite(&edge_length, sizeof(int), 1, fp);
+
+	fclose(fp);
+}
+
 /* A utility routine to dump the contents of the routing resource graph   *
  * (everything -- connectivity, occupancy, cost, etc.) into a file.  Used *
  * only for debugging.                                                    */
@@ -1799,7 +1941,6 @@ void dump_rr_graph(INP const char *file_name) {
 
 #if 0
 	fprintf(fp, "\n\n%d rr_indexed_data entries.\n\n", num_rr_indexed_data);
-
 	for (index = 0; index < num_rr_indexed_data; index++)
 	{
 		print_rr_indexed_data(fp, index);
@@ -2691,10 +2832,12 @@ static int get_opin_direct_connecions(int x, int y, int opin, INOUTP t_linked_ed
 			if(max_index >= opin && min_index <= opin) {
 				offset = opin - min_index;
 				/* This opin is specified to connect directly to an ipin, now compute which ipin to connect to */
+
 				if(x + directs[i].x_offset < nx + 1 &&
 				   x + directs[i].x_offset > 0 &&
 				   y + directs[i].y_offset < ny + 1 &&
-				   y + directs[i].y_offset > 0) {
+				   y + directs[i].y_offset > 0 &&
+				   grid[x+directs[i].x_offset][y+directs[i].y_offset].type == clb_to_clb_directs[i].to_clb_type) {
 					   ipin = OPEN;
 						if(clb_to_clb_directs[i].to_clb_pin_start_index > clb_to_clb_directs[i].to_clb_pin_end_index) {
 							if(swap == TRUE) {
@@ -2722,5 +2865,62 @@ static int get_opin_direct_connecions(int x, int y, int opin, INOUTP t_linked_ed
 	return new_edges;
 }
 
+static void 
+load_rr_graph(const char *arch_file)
+{
+	gzFile gzfp;
+	int inode, size, edge_length;
+	char *edge_switch;
+	int nread;
 
+	size_t len;
+	char *fn;
+
+	len = strlen(arch_file);
+	fn = (char*)malloc(len+1+3);
+	strcpy(fn, arch_file);
+	strcpy(fn+(len-3), "rrg.gz");
+
+	for (inode = 0; inode < num_rr_nodes; ++inode) {
+		free(rr_node[inode].edges);
+		free(rr_node[inode].switches);
+	}
+	free(rr_node);
+
+	gzfp = gzopen(fn, "rb");
+	if (!gzfp) {
+		vpr_printf(TIO_MESSAGE_ERROR, "load_rr_graph() failed because file '%s' not found!\n", fn);
+		exit(1);
+	}
+
+	nread = gzread(gzfp, &size, sizeof(int));
+	assert(nread == sizeof(int));
+	if (size != sizeof(t_rr_node)) {
+		vpr_printf(TIO_MESSAGE_ERROR, "sizeof(t_rr_node) = %d in VPR, but %d in .rrg.gz\n", sizeof(t_rr_node), size);
+		exit(-1);
+	}
+	nread = gzread(gzfp, &num_rr_nodes, sizeof(int));
+	assert(nread == sizeof(int));
+	nread = gzread(gzfp, &edge_length, sizeof(int));
+	assert(nread == sizeof(int));
+
+	vpr_printf(TIO_MESSAGE_INFO, "Loading %d nodes and %d bytes of edge/switch data from %s...\n", num_rr_nodes, edge_length, arch_file);
+	/*rr_node = realloc(rr_node, sizeof(t_rr_node)*num_rr_nodes);*/
+	rr_node = (t_rr_node*)malloc(sizeof(t_rr_node)*num_rr_nodes);
+	edge_switch = (char*)malloc(edge_length);
+
+	nread = gzread(gzfp, rr_node, sizeof(t_rr_node)*num_rr_nodes);
+	assert(nread == ((int)sizeof(t_rr_node))*num_rr_nodes);
+	nread = gzread(gzfp, edge_switch, sizeof(char)*edge_length);
+	assert(nread == ((int)sizeof(char))*edge_length);
+
+	gzclose(gzfp);
+
+	for (inode = 0; inode < num_rr_nodes; ++inode) {
+		rr_node[inode].edges = (int*)(edge_switch + ((long)rr_node[inode].edges));
+		rr_node[inode].switches = (short*)(edge_switch + ((long)rr_node[inode].switches));
+	}
+
+	free(fn);
+}
 

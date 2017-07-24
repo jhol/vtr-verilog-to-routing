@@ -28,6 +28,13 @@ use File::Spec;
 use POSIX;
 use File::Copy;
 use FindBin;
+use File::Which;
+use File::Basename;
+use Config;
+
+
+use Carp;
+$SIG{ __DIE__ } = sub { Carp::confess( @_ ) };
 
 use lib "$FindBin::Bin/perl_libs/XML-TreePP-0.41/lib";
 use XML::TreePP;
@@ -127,6 +134,27 @@ while ( $token = shift(@ARGV) ) {
 	elsif ( $token eq "-min_hard_adder_size" ) {
 		$min_hard_adder_size = shift(@ARGV);
 	}
+	elsif ( $token eq "-yosys" ) {
+		$yosys_script = $yosys_script_default;
+	}
+	elsif ( $token eq "-yosys_script" ) {
+		$yosys_script = shift(@ARGV);
+	}
+	elsif ( $token eq "-yosys_models" ) {
+		$yosys_models = shift(@ARGV);
+	}
+	elsif ( $token eq "-yosys_abc_script" ) {
+		$yosys_abc_script = shift(@ARGV);
+	}
+	elsif ( $token eq "-abc_lut" ) {
+		$abc_lut_file = shift(@ARGV);
+	}
+	elsif ( $token eq "-vpr_options" ) {
+		push(@vpr_options, split(' ', shift(@ARGV)));
+	}
+	elsif ($token eq "-vpr_fix_pins") {
+		$vpr_fix_pins = shift(@ARGV);
+	}
 	else {
 		die "Error: Invalid argument ($token)\n";
 	}
@@ -159,8 +187,17 @@ if ( $vpr_cluster_seed_type eq "" ) {
 	}
 }
 
+# Test for file existance
+( -f $circuit_file_path )
+  or die "Circuit file not found ($circuit_file_path)";
+( -f $architecture_file_path )
+  or die "Architecture file not found ($architecture_file_path)";
+
+if ( $temp_dir eq "" ) {
+	$temp_dir = basename($architecture_file_path,".xml")."/".basename($circuit_file_path,".v");
+}
 if ( !-d $temp_dir ) {
-	system "mkdir $temp_dir";
+	system "mkdir -p $temp_dir";
 }
 -d $temp_dir or die "Could not make temporary directory ($temp_dir)\n";
 if ( !( $temp_dir =~ /.*\/$/ ) ) {
@@ -177,11 +214,6 @@ my $arch_param;
 my $cluster_size;
 my $inputs_per_cluster = -1;
 
-# Test for file existance
-( -f $circuit_file_path )
-  or die "Circuit file not found ($circuit_file_path)";
-( -f $architecture_file_path )
-  or die "Architecture file not found ($architecture_file_path)";
 
 if ( !-e $sdc_file_path ) {
 	# open( OUTPUT_FILE, ">$sdc_file_path" ); 
@@ -194,41 +226,108 @@ if ( $stage_idx_vpr >= $starting_stage and $stage_idx_vpr <= $ending_stage ) {
 	$vpr_path = "$vtr_flow_path/../vpr/vpr";
 	( -r $vpr_path or -r "${vpr_path}.exe" )
 	  or die "Cannot find vpr exectuable ($vpr_path)";
+
+  	if ($vpr_fix_pins ne "random") {
+		( -r $vpr_fix_pins ) or die "Cannot find $vpr_fix_pins!";
+		copy($vpr_fix_pins, $temp_dir);
+		$vpr_fix_pins = basename($vpr_fix_pins);
+	}
 }
 
 my $odin2_path;
 my $odin_config_file_name;
 my $odin_config_file_path;
+my $yosys_path;
+my $yosys_config_file_name;
+my $yosys_config_file_path;
+my $yosys_abc_script_file_path;
+
+my $models_file_path_default;
+my $models_file_path;
+my $abc_rc_path;
+my $yosys_abc_script_path;
+
 if (    $stage_idx_odin >= $starting_stage
 	and $stage_idx_odin <= $ending_stage )
 {
-	$odin2_path = "$vtr_flow_path/../ODIN_II/odin_II.exe";
-	( -e $odin2_path )
-	  or die "Cannot find ODIN_II executable ($odin2_path)";
+	if ($yosys_script eq "") {
+		$odin2_path = "$vtr_flow_path/../ODIN_II/odin_II.exe";
+		( -e $odin2_path )
+			or die "Cannot find ODIN_II executable ($odin2_path)";
 
-	$odin_config_file_name = "basic_odin_config_split.xml";
+		$odin_config_file_name = "basic_odin_config_split.xml";
 
-	$odin_config_file_path = "$vtr_flow_path/misc/$odin_config_file_name";
-	( -e $odin_config_file_path )
-	  or die "Cannot find ODIN config template ($odin_config_file_path)";
+		$odin_config_file_path = "$vtr_flow_path/misc/$odin_config_file_name";
+		( -e $odin_config_file_path )
+			or die "Cannot find ODIN config template ($odin_config_file_path)";
 
-	$odin_config_file_name = "odin_config.xml";
-	my $odin_config_file_path_new = "$temp_dir" . "odin_config.xml";
-	copy( $odin_config_file_path, $odin_config_file_path_new );
-	$odin_config_file_path = $odin_config_file_path_new;
+		$odin_config_file_name = "odin_config.xml";
+		my $odin_config_file_path_new = "$temp_dir" . "odin_config.xml";
+		copy( $odin_config_file_path, $odin_config_file_path_new );
+		$odin_config_file_path = $odin_config_file_path_new;
+	}
+	else
+	{
+		$yosys_path = "$vtr_flow_path/../yosys/yosys";
+		( -e $yosys_path )
+			or die "Cannot find Yosys executable ($yosys_path)";
+
+		$yosys_config_file_name = $yosys_script;
+		$yosys_config_file_path = "$vtr_flow_path/misc/$yosys_config_file_name";
+		( -e $yosys_config_file_path )
+			or die "Cannot find Yosys script ($yosys_config_file_path)";
+
+		my $yosys_config_file_path_new = "$temp_dir" . "$yosys_config_file_name";
+		copy( $yosys_config_file_path, $yosys_config_file_path_new );
+		$yosys_config_file_path = $yosys_config_file_path_new;
+
+		my $tech_file_name;
+		$tech_file_name = "single_port_ram.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "dual_port_ram.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "adder.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "multiply.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "xadder.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "bufgctrl.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+		$tech_file_name = "adder2xadder.v";
+		copy( "$vtr_flow_path/misc/$tech_file_name", "$temp_dir"."$tech_file_name" );
+
+		my $models_file_name = $yosys_models_default;
+		$models_file_path_default = "$temp_dir"."$models_file_name";
+		copy( "$vtr_flow_path/misc/$models_file_name", "$models_file_path_default" );
+
+		$models_file_name = $yosys_models;
+		if ($models_file_name ne "") {
+			$models_file_path = "$temp_dir"."$models_file_name";
+			copy( "$vtr_flow_path/misc/$models_file_name", "$models_file_path" );
+		}
+
+		if ($yosys_abc_script eq "") { 
+			$yosys_abc_script = $yosys_abc_script_default;
+		}
+		$yosys_abc_script_path = "$temp_dir"."$yosys_abc_script";
+		copy( "$vtr_flow_path/misc/$yosys_abc_script", $yosys_abc_script_path );
+	}
 }
 
 my $abc_path;
-my $abc_rc_path;
+$abc_rc_path = "$vtr_flow_path/../abc_with_bb_support/abc.rc";
+( -e $abc_rc_path ) or die "Cannot find ABC RC file ($abc_rc_path)";
+copy( $abc_rc_path, $temp_dir );
+
+my $abc_lut_path = "$vtr_flow_path/misc/$abc_lut_file";
+( -e $abc_lut_path ) or die "Cannot find ABC LUT file ($abc_lut_path)";
+copy( $abc_lut_path, $temp_dir );
+
+$abc_path = "$vtr_flow_path/../abc_with_bb_support/abc";
 if ( $stage_idx_abc >= $starting_stage and $stage_idx_abc <= $ending_stage ) {
-	$abc_path = "$vtr_flow_path/../abc_with_bb_support/abc";
 	( -e $abc_path or -e "${abc_path}.exe" )
 	  or die "Cannot find ABC executable ($abc_path)";
-
-	$abc_rc_path = "$vtr_flow_path/../abc_with_bb_support/abc.rc";
-	( -e $abc_rc_path ) or die "Cannot find ABC RC file ($abc_rc_path)";
-
-	copy( $abc_rc_path, $temp_dir );
 }
 
 my $ace_path;
@@ -236,6 +335,20 @@ if ( $stage_idx_ace >= $starting_stage and $stage_idx_ace <= $ending_stage and $
 	$ace_path = "$vtr_flow_path/../ace2/ace";
 	( -e $ace_path or -e "${ace_path}.exe" )
 	  or die "Cannot find ACE executable ($ace_path)";
+}
+
+
+my $bitstream_path = "$vtr_flow_path/../bnpr2xdl/bnpr2xdl";
+my ($xdl_path, $par_path, $trce_path, $bitgen_path);
+my $arch = basename($architecture_file_path,".xml");
+if ( $stage_idx_bitstream >= $starting_stage and $stage_idx_bitstream <= $ending_stage ) {
+	(-e $bitstream_path) or die "Warning: Cannot find $bitstream_path. Please run \"make\" again.";
+
+	$xdl_path = which("xdl") or die "Cannot find xdl exectuable on \$PATH\n";
+
+	$trce_path = which("trce") or die "Cannot find trce exectuable on \$PATH\n";
+
+	$bitgen_path = which("bitgen") or die "Cannot find bitgen exectuable on \$PATH\n";
 }
 
 # Get circuit name (everything up to the first '.' in the circuit file)
@@ -250,7 +363,7 @@ my $architecture_file_name = $1;
 
 $architecture_file_name =~ m/(.*).xml$/;
 my $architecture_name = $1;
-print "$architecture_name/$benchmark_name...";
+print "$architecture_name/$benchmark_name...\n";
 
 # Get Memory Size
 my $mem_size = -1;
@@ -263,14 +376,19 @@ my $tpp      = XML::TreePP->new();
 my $xml_tree = $tpp->parsefile($architecture_file_path);
 
 # Get lut size
-my $lut_size = xml_find_LUT_Kvalue($xml_tree);
 if ( $lut_size < 1 ) {
-	print "failed: cannot determine arch LUT k-value";
-	$error_code = 1;
+	$lut_size = xml_find_LUT_Kvalue($xml_tree);
+	if ( $lut_size < 1 ) {
+		print "failed: cannot determine arch LUT k-value";
+		$error_code = 1;
+	}
 }
+print "LUT size: $lut_size\n";
 
 # Get memory size
 $mem_size = xml_find_mem_size($xml_tree);
+print "MEM size: $mem_size\n";
+print "Min Hard Adder size: $min_hard_adder_size\n";
 
 my $odin_output_file_name =
   "$benchmark_name" . file_ext_for_stage($stage_idx_odin);
@@ -301,10 +419,11 @@ my $vpr_route_output_file_path = "$temp_dir$vpr_route_output_file_name";
 
 my $architecture_file_path_new = "$temp_dir$architecture_file_name";
 copy( $architecture_file_path, $architecture_file_path_new );
+my $architecture_file_path_orig = $architecture_file_path;
 $architecture_file_path = $architecture_file_path_new;
 
 my $circuit_file_path_new =
-  "$temp_dir$benchmark_name" . file_ext_for_stage( $starting_stage - 1 );
+  "$temp_dir$benchmark_name" . file_ext_for_stage(0);
 copy( $circuit_file_path, $circuit_file_path_new );
 $circuit_file_path = $circuit_file_path_new;
 
@@ -318,35 +437,74 @@ my $q         = "not_run";
 
 if ( $starting_stage <= $stage_idx_odin and !$error_code ) {
 
-	#system "sed 's/XXX/$benchmark_name.v/g' < $odin2_base_config > temp1.xml";
-	#system "sed 's/YYY/$arch_name/g' < temp1.xml > temp2.xml";
-	#system "sed 's/ZZZ/$odin_output_file_path/g' < temp2.xml > temp3.xml";
-	#system "sed 's/PPP/$mem_size/g' < temp3.xml > circuit_config.xml";
+	unlink "$odin_output_file_path";
+	if ($yosys_script eq "") {
+		#system "sed 's/XXX/$benchmark_name.v/g' < $odin2_base_config > temp1.xml";
+		#system "sed 's/YYY/$arch_name/g' < temp1.xml > temp2.xml";
+		#system "sed 's/ZZZ/$odin_output_file_path/g' < temp2.xml > temp3.xml";
+		#system "sed 's/PPP/$mem_size/g' < temp3.xml > circuit_config.xml";
 
-	file_find_and_replace( $odin_config_file_path, "XXX", $circuit_file_name );
-	file_find_and_replace( $odin_config_file_path, "YYY",
-		$architecture_file_name );
-	file_find_and_replace( $odin_config_file_path, "ZZZ",
-		$odin_output_file_name );
-	file_find_and_replace( $odin_config_file_path, "PPP", $mem_size );
-	file_find_and_replace( $odin_config_file_path, "AAA", $min_hard_adder_size );
+		file_find_and_replace( $odin_config_file_path, "XXX", $circuit_file_name );
+		file_find_and_replace( $odin_config_file_path, "YYY",
+			$architecture_file_name );
+		file_find_and_replace( $odin_config_file_path, "ZZZ",
+			$odin_output_file_name );
+		file_find_and_replace( $odin_config_file_path, "PPP", $mem_size );
+		file_find_and_replace( $odin_config_file_path, "AAA", $min_hard_adder_size );
 
-	if ( !$error_code ) {
-		$q =
-		  &system_with_timeout( "$odin2_path", "odin.out", $timeout, $temp_dir,
-			"-c", $odin_config_file_name );
+		if ( !$error_code ) {
+			$q =
+			&system_with_timeout( "$odin2_path", "odin.out", $timeout, $temp_dir,
+				"-c", $odin_config_file_name );
 
-		if ( -e $odin_output_file_path ) {
-			if ( !$keep_intermediate_files ) {
-				system "rm -f ${temp_dir}*.dot";
-				system "rm -f ${temp_dir}*.v";
-				system "rm -f $odin_config_file_path";
+			if ( -e $odin_output_file_path ) {
+				if ( !$keep_intermediate_files ) {
+					system "rm -f ${temp_dir}*.dot";
+					system "rm -f ${temp_dir}*.v";
+					system "rm -f $odin_config_file_path";
+				}
+			}
+			else {
+				print "failed: odin";
+				$error_code = 1;
 			}
 		}
-		else {
-			print "failed: odin";
-			$error_code = 1;
+	}
+	else {
+		file_find_and_replace( $yosys_config_file_path, "XXX", $circuit_file_name );
+		file_find_and_replace( $yosys_config_file_path, "ZZZ",
+			$odin_output_file_name );
+		#file_find_and_replace( $yosys_config_file_path, "LUTSIZE", $lut_size );
+		file_find_and_replace( $yosys_config_file_path, "ABCEXE", $abc_path );
+		file_find_and_replace( $yosys_config_file_path, "ABCSCRIPT", $yosys_abc_script );
+
+		file_find_and_replace( $yosys_abc_script_path, "ABCLUT", $abc_lut_file );
+
+		file_find_and_replace( $models_file_path_default, "PPP", $mem_size );
+		file_find_and_replace( $models_file_path_default, "AAA", $min_hard_adder_size );
+		if ($models_file_path ne "") {
+			file_find_and_replace( $models_file_path, "PPP", $mem_size );
+			file_find_and_replace( $models_file_path, "AAA", $min_hard_adder_size );
 		}
+
+		if ( !$error_code ) {
+			$q =
+			&system_with_timeout( "$yosys_path", "yosys.out", $timeout, $temp_dir,
+				"-v 2", $yosys_config_file_name );
+
+			if ( -e $odin_output_file_path ) {
+				if ( !$keep_intermediate_files ) {
+					system "rm -f ${temp_dir}*.dot";
+					system "rm -f ${temp_dir}*.v";
+					system "rm -f $odin_config_file_path";
+				}
+			}
+			else {
+				print "failed: yosys";
+				$error_code = 1;
+			}
+		}
+
 	}
 }
 
@@ -357,9 +515,53 @@ if (    $starting_stage <= $stage_idx_abc
 	and $ending_stage >= $stage_idx_abc
 	and !$error_code )
 {
-	$q = &system_with_timeout( $abc_path, "abc.out", $timeout, $temp_dir, "-c",
-		"read $odin_output_file_name; time; resyn; resyn2; if -K $lut_size; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; write_hie $odin_output_file_name $abc_output_file_name; print_stats"
-	);
+	if ($yosys_script eq "") {
+		# EH: Replace all .subckt adder with .subckt xadder, 
+		# with XOR and AND pushed into soft-logic
+		my $abc_input_file_name = "$benchmark_name" . ".xadder" . file_ext_for_stage($stage_idx_odin);
+		my $abc_input_file_path = "$temp_dir$abc_input_file_name";
+
+		my $adder_model = <<'EOF';
+(\.model adder
+\.inputs\s+a(\[0\])?\s+b(\[0\])?\s+cin(\[0\])?
+\.outputs\s+cout(\[0\])?\s+sumout(\[0\])?)
+\.blackbox
+\.end
+EOF
+		my $xadder_model = <<'EOF';
+\1
+.names a\2 b\3 a_xor_b
+01 1
+10 1
+.names a\2 b\3 a_and_b
+11 1
+.subckt xadder a_xor_b=a_xor_b a_and_b=a_and_b cin=cin\4 cout=cout\5 sumout=sumout\6
+.end
+
+.model xadder
+.inputs a_xor_b a_and_b cin
+.outputs cout sumout
+.blackbox
+.end
+EOF
+		unlink "$abc_input_file_path";
+		copy( $odin_output_file_path, $abc_input_file_path );
+		&system_with_timeout("/usr/bin/perl", "perl.out", $timeout, $temp_dir, 
+			"-0777", "-p", "-i", "-e", "s/$adder_model/$xadder_model/smg", $abc_input_file_name);
+
+
+		unlink "$abc_output_file_path";
+		$q = &system_with_timeout( $abc_path, "abc.out", $timeout, $temp_dir, "-c",
+			"read $abc_input_file_name; read_lut $abc_lut_file; time; resyn; resyn2; if -K $lut_size; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; scleanup; time; print_stats; write_hie $abc_input_file_name $abc_output_file_name"
+		);
+	}
+	else
+	{
+		unlink "$abc_output_file_path";
+		$q = &system_with_timeout( $abc_path, "abc.out", $timeout, $temp_dir, "-c",
+			"read $odin_output_file_name; print_stats; write_hie $odin_output_file_name $abc_output_file_name"
+		);
+	}
 
 	if ( -e $abc_output_file_path ) {
 
@@ -416,7 +618,41 @@ if (    $starting_stage <= $stage_idx_prevpr
 		$prevpr_input_blif_path = $abc_output_file_path;
 	}
 	
-	copy($prevpr_input_blif_path, $prevpr_output_file_path);
+	if ($yosys_script eq "") {
+		# EH: Scan all .latch -es for clocks
+		# Add a BUFGCTRL for each clock found
+		open (my $fin, $prevpr_input_blif_path) or die ("Could not open $prevpr_input_blif_path");
+		open (my $fout, ">$prevpr_output_file_path") or die ("Could not open $prevpr_output_file_path");
+		my %clks;
+		while (my $line = <$fin>) {
+			chomp $line;
+			$line =~ m/(\s*)\.latch(\s+)([^ ]+)(\s+)([^ ]+)(\s+)([^ ]+)(\s+)([^ ]+)(\s+)([^ ]+)$/;
+			if ($9) {
+				$clks{$9} = 1;
+			}
+			foreach my $clk (keys %clks) {
+				$line =~ s/\Q$clk /${clk}_BUFG /g;
+			}
+			print $fout "$line\n";
+		}
+		close $fin;
+		if (keys %clks) {
+			print $fout "\n";
+			foreach my $clk (keys %clks) {
+				print $fout ".subckt bufgctrl i[0]=$clk i[1]=unconn s[0]=unconn s[1]=unconn ce[0]=unconn ce[1]=unconn ignore[0]=unconn ignore[1]=unconn o[0]=$clk"."_BUFG\n";
+			}
+			print $fout "\n";
+			print $fout ".model bufgctrl\n";
+			print $fout ".inputs i[0] i[1] s[0] s[1] ce[0] ce[1] ignore[0] ignore[1]\n";
+			print $fout ".outputs o[0]\n";
+			print $fout ".blackbox\n";
+			print $fout ".end\n";
+		}
+		close $fout;
+	}
+	else {
+		copy($prevpr_input_blif_path, $prevpr_output_file_path);
+	}
 
 	if ($prevpr_success) {
 		if ( !$keep_intermediate_files ) {
@@ -433,7 +669,16 @@ if (    $starting_stage <= $stage_idx_prevpr
 ################################## VPR ##########################################
 #################################################################################
 
-if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
+if ( $starting_stage <= $stage_idx_vpr 
+	and $ending_stage >= $stage_idx_vpr 
+	and !$error_code ) 
+{
+	(my $rrg_file_path = File::Spec->rel2abs($architecture_file_path_orig)) =~ s{\.[^.]+$}{.rrg.gz};
+	(-e "$rrg_file_path") or die("$rrg_file_path does not exist!");
+	unless(-e "$temp_dir/".basename($rrg_file_path)) {
+		symlink($rrg_file_path, "$temp_dir/".basename($rrg_file_path)) or die;
+	}
+
 	my @vpr_power_args;
 
 	if ($do_power) {
@@ -452,6 +697,7 @@ if ( $ending_stage >= $stage_idx_vpr and !$error_code ) {
 			"--cluster_seed_type",        "$vpr_cluster_seed_type",
 			"--sdc_file", 				  "$sdc_file_path",
 			"--seed",			 		  "$seed",
+			@vpr_options,
 			"--nodisp"
 		);
 		if ( $timing_driven eq "on" ) {
@@ -582,8 +828,96 @@ close(RESULTS);
 #system "rm -f core.*";
 #system "rm -f gc.txt";
 
+#################################################################################
+################################## BITSTREAM ####################################
+#################################################################################
+
+if ($ending_stage >= $stage_idx_bitstream and ! $error_code)
+{
+	(my $pkg_file_path = File::Spec->rel2abs($architecture_file_path_orig)) =~ s{(_[^_/]+)?\.[^.]+$}{.pkg};
+	(-e "$pkg_file_path") or die("$pkg_file_path does not exist!");
+	unless (-e "$temp_dir/".basename($pkg_file_path)) {
+		symlink($pkg_file_path, "$temp_dir/".basename($pkg_file_path)) or die;
+	}
+
+	(my $tws_file_path = File::Spec->rel2abs($architecture_file_path_orig)) =~ s{\.[^.]+$}{.tws};
+	(-e "$tws_file_path") or die("$tws_file_path does not exist!");
+	unless(-e "$temp_dir/".basename($tws_file_path)) {
+		symlink($tws_file_path, "$temp_dir/".basename($tws_file_path)) or die;
+	}
+
+	my @bitgen_options;
+	if ($arch eq "xc6vlx240tff1156") {
+		unless (-e "$temp_dir/xc6vlx240t.db") {
+			symlink("$vtr_flow_path/arch/xilinx/xc6vlx240t.db", "$temp_dir/xc6vlx240t.db") or die;
+		}
+		unless (-e "$temp_dir/Virtex6.db") {
+			symlink("$vtr_flow_path/arch/xilinx/Virtex6.db", "$temp_dir/Virtex6.db") or die;
+		}
+		unless (-e "$temp_dir/xc6vlx240tff1156_include.xdl") {
+			symlink("$vtr_flow_path/arch/xilinx/xc6vlx240tff1156_include.xdl", "$temp_dir/xc6vlx240tff1156_include.xdl") or die;
+		}
+	}
+	else {
+		die($arch);
+	}
+
+	(-e "$prevpr_output_file_path") or die("$prevpr_output_file_path does not exist!");
+	(-e "$temp_dir$benchmark_name.net") or die("$temp_dir$benchmark_name.net does not exist!");
+	(-e "$temp_dir$benchmark_name.place") or die("$temp_dir$benchmark_name.place does not exist!");
+	(-e "$temp_dir$benchmark_name.route") or die("$temp_dir$benchmark_name.route does not exist!");
+
+	unlink "$temp_dir$benchmark_name".".xdl"; 
+	$q = &system_with_timeout($bitstream_path, 
+					"bitstream.out",
+					$timeout,
+					$temp_dir,
+					$arch,
+					$benchmark_name
+	);
+	(-e "$temp_dir$benchmark_name".".xdl") or die("$temp_dir$benchmark_name".".xdl does not exist!");
+
+	unlink "$temp_dir$benchmark_name".".ncd"; 
+	$q = &system_with_timeout(	
+			$xdl_path, 
+			"xdl2ncd.out",
+			$timeout,
+			$temp_dir,
+			"-force",
+			"-xdl2ncd",
+			"$benchmark_name".".xdl",
+			"$benchmark_name".".ncd"
+	);
+	
+	(-e "$temp_dir$benchmark_name".".ncd") or die("$temp_dir$benchmark_name".".ncd does not exist!");
+
+	$q = &system_with_timeout(
+			$trce_path, 
+			"trce.out",
+			$timeout,
+			$temp_dir,
+			"-v", "10",
+			"-a",
+			"$benchmark_name.ncd"
+			);
+
+	unlink "$temp_dir$benchmark_name.bit"; 
+	unlink "$temp_dir$benchmark_name.drc"; 
+	$q = &system_with_timeout(
+			$bitgen_path, 
+			"bitgen.out",
+			$timeout,
+			$temp_dir,
+			"-d",
+			@bitgen_options,
+			"-w", "$benchmark_name.ncd",
+			);
+
+	(-e "$temp_dir$benchmark_name.bit") or die("$temp_dir$benchmark_name.ncd does not exist!");
+}
+
 if ( !$error_code ) {
-	system "rm -f *.echo";
+	#system "rm -f *.echo";
 	print "OK";
 }
 print "\n";
@@ -610,7 +944,7 @@ sub system_with_timeout {
 		chdir $_[3];
 
 		
-		open( STDOUT, "> $_[1]" );
+		open( STDOUT, "| tee $_[1]" );
 		open( STDERR, ">&STDOUT" );
 		
 
@@ -626,7 +960,7 @@ sub system_with_timeout {
 		# like redirects so that perl will use execvp and $pid will actually be
 		# that of vpr so we can kill it later.
 		print "\n$_[0] @VPRARGS\n";
-		exec $_[0], @VPRARGS;
+		exec "/usr/bin/time", "-v", $_[0], @VPRARGS;
 	}
 	else {
 		my $timed_out = "false";
@@ -687,6 +1021,9 @@ sub stage_index {
 	}
 	if ( lc($stage_name) eq "vpr" ) {
 		return $stage_idx_vpr;
+	}
+	if ( lc($stage_name) eq "bitstream" ) {
+		return $stage_idx_bitstream;
 	}
 	return -1;
 }
@@ -859,7 +1196,7 @@ sub xml_find_mem_size {
 		return "";
 	}
 
-	my $memory_pb = xml_find_child_by_key_value ($pb_tree, "-name", "memory");
+	my $memory_pb = xml_find_child_by_key_value ($pb_tree, "-name", "RAMB36E1");
 	if ( $memory_pb eq "" ) {
 		return "";
 	}

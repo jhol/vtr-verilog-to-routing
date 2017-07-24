@@ -41,8 +41,8 @@ void CheckSetup(INP enum e_operation Operation,
 	}
 
 	if (!PlacerOpts.doPlacement && (USER == PlacerOpts.pad_loc_type)) {
-		vpr_printf(TIO_MESSAGE_ERROR, "A pad location file requires that placement is enabled.\n");
-		exit(1);
+		vpr_printf(TIO_MESSAGE_WARNING, "A pad location file requires that placement is enabled.\n");
+		/*exit(1);*/
 	}
 
 	if (RouterOpts.doRouting) {

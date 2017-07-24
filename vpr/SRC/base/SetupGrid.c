@@ -19,7 +19,7 @@ static void CheckGrid(void);
 static t_type_ptr find_type_col(INP int x);
 
 /* Create and fill FPGA architecture grid.         */
-void alloc_and_load_grid(INOUTP int *num_instances_type) {
+void alloc_and_load_grid(INOUTP int *num_instances_type, const t_arch *arch) {
 
 	int i, j;
 	t_type_ptr type;
@@ -90,22 +90,88 @@ void alloc_and_load_grid(INOUTP int *num_instances_type) {
 		type = find_type_col(i);
 		for (j = 1; j <= ny; j++) {
 			grid[i][j].type = type;
-			grid[i][j].offset = (j - 1) % type->height;
-			if (j + grid[i][j].type->height - 1 - grid[i][j].offset > ny) {
-				grid[i][j].type = EMPTY_TYPE;
-				grid[i][j].offset = 0;
-			}
+			if (type != IO_TYPE) {
+				int k;
+				grid[i][j].offset = (j - 1) % type->height;
+				if (j + grid[i][j].type->height - 1 - grid[i][j].offset > ny) {
+					grid[i][j].type = EMPTY_TYPE;
+					grid[i][j].offset = 0;
+				}
 
-			if (type->capacity > 1) {
-				vpr_printf(TIO_MESSAGE_ERROR, "in FillArch(), expected core blocks to have capacity <= 1 but (%d, %d) has type '%s' and capacity %d.\n", 
-						i, j, grid[i][j].type->name, grid[i][j].type->capacity);
-				exit(1);
-			}
+				//if (type->capacity > 1) {
+				//	vpr_printf(TIO_MESSAGE_ERROR, "in FillArch(), expected core blocks to have capacity <= 1 but (%d, %d) has type '%s' and capacity %d.\n", 
+				//			i, j, grid[i][j].type->name, grid[i][j].type->capacity);
+				//	exit(1);
+				//}
 
-			grid[i][j].blocks = (int *) my_malloc(sizeof(int));
-			grid[i][j].blocks[0] = EMPTY;
-			if (grid[i][j].offset == 0) {
-				num_instances_type[grid[i][j].type->index]++;
+				grid[i][j].blocks = (int *) my_malloc(sizeof(int) * type->capacity);
+				for (k = 0; k < type->capacity; ++k) {
+					grid[i][j].blocks[k] = EMPTY;
+					if (grid[i][j].offset == 0) {
+						num_instances_type[grid[i][j].type->index]++;
+					}
+				}
+			}
+			else {
+				int k;
+				grid[i][j].blocks = (int *)my_malloc(sizeof(int) * IO_TYPE->capacity);
+				for(k = 0; k < IO_TYPE->capacity; k++)
+				{
+					grid[i][j].blocks[k] = EMPTY;
+					if(grid[i][j].offset == 0)
+					{
+						num_instances_type[IO_TYPE->index]++;
+					}
+				}
+			}
+		}
+	}
+
+	/* EH: Add support for overriding blocks */
+	for (i = 0; i < arch->num_overrides; i++)
+	{
+		int startx, starty, endx, endy, incx, incy;
+		int x, y, h;
+		int itype;
+
+		startx = arch->overrides[i].startx;
+		starty = arch->overrides[i].starty;
+		endx = arch->overrides[i].endx;
+		endy = arch->overrides[i].endy;
+		incx = arch->overrides[i].incx;
+		incy = arch->overrides[i].incy;
+		assert(startx >= 0 && startx <= nx+1);
+		assert(starty >= 0 && starty <= ny+1);
+		assert(endx >= 0 && endx <= (nx+1)+1);
+		assert(endy >= 0 && endy <= (ny+1)+1);
+		assert(incx > 0 && incx <= nx+1);
+		assert(incy > 0 && incy <= ny+1);
+
+		for (itype = 0; itype < num_types; itype++) {
+			if (strcmp(type_descriptors[itype].name, arch->overrides[i].type) == 0)
+				break;
+		}
+		if (itype == num_types) {
+			vpr_printf(TIO_MESSAGE_ERROR, "overrideslist type %s not recognised!\n", arch->overrides[i].type);
+			exit(1);
+		}
+
+		for (x = startx; x <= endx; x += incx)
+		{
+			for (y = starty; y <= endy; y += incy)
+			{
+				type = grid[x][y].type;
+				if (grid[x][y].offset == 0)
+					num_instances_type[type->index] -= type->capacity;
+				if (&type_descriptors[itype] == EMPTY_TYPE)
+					++num_instances_type[type_descriptors[itype].index];
+				else 
+					num_instances_type[type_descriptors[itype].index] += type_descriptors[itype].capacity;
+				for (h = 0; h < type_descriptors[itype].height; ++h) {
+					assert(y+h <= (ny+1));
+					grid[x][y+h].type = &type_descriptors[itype];
+					grid[x][y+h].offset = h;
+				}
 			}
 		}
 	}
@@ -185,8 +251,9 @@ static t_type_ptr find_type_col(INP int x) {
 	column_type = FILL_TYPE;
 
 	for (i = 0; i < num_types; i++) {
-		if (&type_descriptors[i] == IO_TYPE
-				|| &type_descriptors[i] == EMPTY_TYPE
+		// EH: Do not ignore IO_TYPE
+		if (/*&type_descriptors[i] == IO_TYPE
+				||*/ &type_descriptors[i] == EMPTY_TYPE
 				|| &type_descriptors[i] == FILL_TYPE)
 			continue;
 		num_loc = type_descriptors[i].num_grid_loc_def;

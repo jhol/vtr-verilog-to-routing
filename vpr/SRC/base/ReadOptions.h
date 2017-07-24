@@ -90,6 +90,9 @@ struct s_options {
 
 	/* Last read settings file */
 	int read_settings;
+
+	/* EH */
+	boolean DumpVtbRrg;
 };
 
 enum e_echo_files {
@@ -108,6 +111,7 @@ enum e_echo_files {
 	E_ECHO_PLACEMENT_CRITICAL_PATH,
 	E_ECHO_PLACEMENT_LOWER_BOUND_SINK_DELAYS,
 	E_ECHO_PLACEMENT_LOGIC_SINK_DELAYS,
+	E_ECHO_PLACEMENT_LOOKUP,
 	E_ECHO_ROUTING_SINK_DELAYS,
 	E_ECHO_POST_FLOW_TIMING_GRAPH,
 	E_ECHO_POST_PACK_NETLIST,
@@ -130,6 +134,7 @@ enum e_echo_files {
 	E_ECHO_CRITICALITY,
 	E_ECHO_COMPLETE_NET_TRACE,
 	E_ECHO_SEG_DETAILS,
+	E_ECHO_PLACEMENT_MACROS,
 	E_ECHO_END_TOKEN
 };
 
@@ -171,4 +176,9 @@ boolean GetPostSynthesisOption(void);
 void SetPostSynthesisOption(boolean post_synthesis_enabled);
 
 boolean IsPostSynthesisEnabled(INP t_options *Options);
+
+/* EH */
+boolean getDumpVtbEnabled(void);
+void setDumpVtbEnabled(boolean dump_enabled);
+boolean IsDumpVtbEnabled(INP t_options *Options);
 #endif

@@ -700,6 +700,10 @@ struct s_router_opts {
 	boolean verify_binary_search;
 	boolean full_stats;
 	boolean doRouting;
+	/* EH */
+	boolean noRoutethru;
+	boolean noReroute;
+	boolean noGlobals;
 };
 
 /* All the parameters controlling the router's operation are in this        *
@@ -897,7 +901,7 @@ typedef struct s_rr_node {
 	float C;
 
 	enum e_direction direction; /* UDSD by AY */
-	enum e_drivers drivers; /* UDSD by AY */
+	enum e_drivers drivers;
 	int num_wire_drivers; /* UDSD by WMF */
 	int num_opin_drivers; /* UDSD by WMF (could use "short") */
 
@@ -1037,6 +1041,71 @@ typedef struct s_vpr_setup {
 	int GraphPause; /* user interactiveness graphics option */
 	t_power_opts PowerOpts;
 } t_vpr_setup;
+
+/* EH */
+#define DEFAULT_SWITCH_INDEX	0
+#define L1_SWITCH_INDEX		1
+#define L2_SWITCH_INDEX		2
+#define L4_SWITCH_INDEX		3
+#define L6_SWITCH_INDEX		4
+#define LH12_SWITCH_INDEX	5
+#define LV12_SWITCH_INDEX	6
+#define L16_SWITCH_INDEX	7
+#define LV18_SWITCH_INDEX	8
+#define A6_SWITCH_INDEX		9
+#define A5_SWITCH_INDEX		10
+#define A4_SWITCH_INDEX		11
+#define A3_SWITCH_INDEX		12
+#define A2_SWITCH_INDEX		13
+#define A1_SWITCH_INDEX		14
+#define LUT_SWITCH_INDEX	15
+#define BYP_SWITCH_INDEX	16
+#define BYP_B_SWITCH_INDEX	17
+#define FAN_SWITCH_INDEX	18
+#define BRAM_DI_SWITCH_INDEX	19
+#define BRAM_AD_SWITCH_INDEX	20
+#define BRAM_WE_SWITCH_INDEX	21
+#define DSP_A_SWITCH_INDEX	22
+#define DSP_B_SWITCH_INDEX	23
+#define CLK2GEN_SWITCH_INDEX	24
+#define GEN2CLK_SWITCH_INDEX	25
+
+				/* 4 */
+#define DEFAULT_COST_INDEX	CHANX_COST_INDEX_START
+				/* 5 */
+#define CLOCK_COST_INDEX	DEFAULT_COST_INDEX+1
+				/* 6 */
+#define L1_COST_INDEX		DEFAULT_COST_INDEX+2
+				/* 7 */
+#define L2_COST_INDEX		DEFAULT_COST_INDEX+3
+				/* 8 */
+#define L4_COST_INDEX		DEFAULT_COST_INDEX+4
+				/* 9 */
+#define L6_COST_INDEX		DEFAULT_COST_INDEX+5
+				/* 10 */
+#define LH12_COST_INDEX		DEFAULT_COST_INDEX+6
+				/* 11 */
+#define LV12_COST_INDEX		DEFAULT_COST_INDEX+7
+				/* 12 */
+#define L16_COST_INDEX		DEFAULT_COST_INDEX+8
+				/* 13 */
+#define LV18_COST_INDEX		DEFAULT_COST_INDEX+9
+#define INV_COST_INDEX_OFFSET	10
+
+#define PTC_SLICEL_A6		0
+#define PTC_SLICEL_A5		1
+#define PTC_SLICEL_A4		2
+#define PTC_SLICEL_A3		3
+#define PTC_SLICEL_A2		4
+#define PTC_SLICEL_A1		5
+#define PTC_SLICEL_A6_VCCONLY	6
+#define PTC_SLICEL_AX		7
+#define PTC_SLICEL_CIN		32
+#define PTC_SLICEL_A		33
+
+#define PINS_PER_SLICEL		49
+#define IPINS_PER_BLE		8
+#define OPINS_PER_BLE		3
 
 #endif
 

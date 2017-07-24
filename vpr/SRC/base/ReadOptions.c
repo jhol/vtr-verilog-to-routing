@@ -10,6 +10,7 @@
 #include "globals.h"
 
 static boolean EchoEnabled;
+static boolean DumpVtbEnabled;
 
 static boolean Generate_PostSynthesis_Netlist;
 
@@ -144,6 +145,7 @@ void alloc_and_load_echo_file_info() {
 	setEchoFileName(E_ECHO_PLACEMENT_CRITICAL_PATH, "placement_critical_path.echo");
 	setEchoFileName(E_ECHO_PLACEMENT_LOWER_BOUND_SINK_DELAYS, "placement_lower_bound_sink_delays.echo");
 	setEchoFileName(E_ECHO_PLACEMENT_LOGIC_SINK_DELAYS, "placement_logic_sink_delays.echo");
+	setEchoFileName(E_ECHO_PLACEMENT_LOOKUP, "lookup_dump.echo");
 	setEchoFileName(E_ECHO_ROUTING_SINK_DELAYS, "routing_sink_delays.echo");
 	setEchoFileName(E_ECHO_POST_FLOW_TIMING_GRAPH, "post_flow_timing_graph.blif");
 	setEchoFileName(E_ECHO_POST_PACK_NETLIST, "post_pack_netlist.blif");
@@ -166,6 +168,7 @@ void alloc_and_load_echo_file_info() {
 	setEchoFileName(E_ECHO_CRITICALITY, "criticality.echo");
 	setEchoFileName(E_ECHO_COMPLETE_NET_TRACE, "complete_net_trace.echo");
 	setEchoFileName(E_ECHO_SEG_DETAILS, "seg_details.txt");
+	setEchoFileName(E_ECHO_PLACEMENT_MACROS, "placement_macros.echo");
 }
 
 void free_echo_file_info() {
@@ -473,6 +476,13 @@ ProcessOption(INP char **Args, INOUTP t_options * Options) {
 		return ReadString(Args, &Options->PowerFile);
 	case OT_CMOS_TECH_BEHAVIOR_FILE:
 		return ReadString(Args, &Options->CmosTechFile);
+
+		/* EH */
+	case OT_DUMP_VTB_RRG:
+	case OT_NO_ROUTETHRU:
+	case OT_NO_REROUTE:
+	case OT_NO_GLOBALS:
+		return Args;
 
 	default:
 		vpr_printf(TIO_MESSAGE_ERROR, "Unexpected option '%s' on command line.\n", *PrevArgs);
@@ -962,6 +972,22 @@ ReadString(INP char **Args, OUTP char **Val) {
 	*Val = my_strdup(*Args);
 
 	return ++Args;
+}
+
+boolean IsDumpVtbEnabled(INP t_options *Options) {
+	if (Options->Count[OT_DUMP_VTB_RRG]) {
+		return TRUE;
+	}
+	return FALSE;
+}
+
+
+boolean getDumpVtbEnabled(void) {
+	return DumpVtbEnabled;
+}
+
+void setDumpVtbEnabled(boolean dump_enabled) {
+	DumpVtbEnabled = dump_enabled;
 }
 
 

@@ -39,6 +39,8 @@ typedef struct {
 	float backward_path_cost;
 	short prev_edge;
 	short target_flag;
+	/* EH */
+	int reserved_for;
 } t_rr_node_route_inf;
 
 /* Extra information about each rr_node needed only during routing (i.e.    *
@@ -67,7 +69,7 @@ extern struct s_bb *route_bb; /* [0..num_nets-1]     */
 
 /******* Subroutines in route_common used only by other router modules ******/
 
-void pathfinder_update_one_cost(struct s_trace *route_segment_start,
+int pathfinder_update_one_cost(struct s_trace *route_segment_start,
 		int add_or_sub, float pres_fac);
 
 void pathfinder_update_cost(float pres_fac, float acc_fac);
@@ -114,4 +116,9 @@ void reserve_locally_used_opins(float pres_fac, boolean rip_up_local_opins,
 
 void free_chunk_memory_trace(void);
 
-
+void split_gnd_vcc_nets(struct s_router_opts *router_opts);
+void fix_bram_connections(void);
+void transform_clocks(void);
+void expose_local_fb_nets(void);
+short* find_rt(int x, int y, int src_ptc, int sink_ptc);
+void delete_all_rt(void);

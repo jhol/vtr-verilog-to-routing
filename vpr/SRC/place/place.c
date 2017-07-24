@@ -311,7 +311,8 @@ void try_place(struct s_placer_opts placer_opts,
 		struct s_annealing_sched annealing_sched,
 		t_chan_width_dist chan_width_dist, struct s_router_opts router_opts,
 		struct s_det_routing_arch det_routing_arch, t_segment_inf * segment_inf,
-		t_timing_inf timing_inf, t_direct_inf *directs, int num_directs) {
+		t_timing_inf timing_inf, t_direct_inf *directs, int num_directs,
+		const char *arch_file) {
 
 	/* Does almost all the work of placing a circuit.  Width_fac gives the   *
 	 * width of the widest channel.  Place_cost_exp says what exponent the   *
@@ -349,7 +350,8 @@ void try_place(struct s_placer_opts placer_opts,
 			|| placer_opts.enable_timing_computations) {
 		/*do this before the initial placement to avoid messing up the initial placement */
 		slacks = alloc_lookups_and_criticalities(chan_width_dist, router_opts,
-				det_routing_arch, segment_inf, timing_inf, &net_delay, directs, num_directs);
+				det_routing_arch, segment_inf, timing_inf, &net_delay, directs, 
+				num_directs, arch_file);
 
 		remember_net_delay_original_ptr = net_delay;
 
@@ -1215,7 +1217,6 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 		z_swap_offset = z_to - z_from;
 		
 		for (imember = 0; imember < pl_macros[imacro].num_blocks && abort_swap == FALSE; imember++) {
-
 			// Gets the new from and to info for every block in the macro
 			// cannot use the old from and to info
 			curr_b_from = pl_macros[imacro].members[imember].blk_index;
@@ -1227,9 +1228,11 @@ static int find_affected_blocks(int b_from, int x_to, int y_to, int z_to) {
 			curr_x_to = curr_x_from + x_swap_offset;
 			curr_y_to = curr_y_from + y_swap_offset;
 			curr_z_to = curr_z_from + z_swap_offset;
+			assert(curr_z_to < block[b_from].type->capacity);
 			
 			// Make sure that the swap_to location is still on the chip
-			if (curr_x_to < 1 || curr_x_to > nx || curr_y_to < 1 || curr_y_to > ny || curr_z_to < 0) {
+			if (curr_x_to < 1 || curr_x_to > nx || curr_y_to < 1 || curr_y_to > ny || curr_z_to < 0
+			    || grid[curr_x_to][curr_y_to].type != block[b_from].type) {
 				abort_swap = TRUE;
 			} else {
 				curr_b_to = grid[curr_x_to][curr_y_to].blocks[curr_z_to];
@@ -2060,6 +2063,21 @@ static void alloc_and_load_placement_structs(
 	alloc_and_load_try_swap_structs();
 
 	num_pl_macros = alloc_and_load_placement_macros(directs, num_directs, &pl_macros);
+
+	if (getEchoEnabled() && isEchoFileEnabled(E_ECHO_PLACEMENT_MACROS)) {
+		int imacro, imember;
+		FILE *fp;
+		fp = my_fopen(getEchoFileName(E_ECHO_PLACEMENT_MACROS), "w", 0);
+		for (imacro = 0; imacro < num_pl_macros; imacro++) {
+			fprintf(fp, "Macro %d (%d members):\n", imacro, pl_macros[imacro].num_blocks);
+			for (imember = 0; imember < pl_macros[imacro].num_blocks; imember++) {
+				int member_iblk = pl_macros[imacro].members[imember].blk_index;
+				fprintf(fp, "\t%d: %d -- %s\n", imember, member_iblk, block[member_iblk].name);
+			}
+			fprintf(fp, "\n");
+		}
+		fclose(fp);
+	}
 }
 
 static void alloc_and_load_try_swap_structs() {

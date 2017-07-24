@@ -344,7 +344,7 @@ static void print_primitive(FILE *fpout, int iblk) {
 				truth_table = truth_table->next;
 			}
 		} else {
-			vpr_printf(TIO_MESSAGE_WARNING, "TODO: Implement blif dumper for subckt %s model %s", logical_block[iblk].name, logical_block[iblk].model->name);
+			vpr_printf(TIO_MESSAGE_WARNING, "TODO: Implement blif dumper for subckt %s model %s\n", logical_block[iblk].name, logical_block[iblk].model->name);
 		}
 	}
 }

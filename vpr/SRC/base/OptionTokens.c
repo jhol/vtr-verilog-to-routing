@@ -10,7 +10,8 @@ struct s_TokenPair OptionBaseTokenList[] = {
 				OT_RECOMPUTE_CRIT_ITER }, { "inner_loop_recompute_divider",
 				OT_INNER_LOOP_RECOMPUTE_DIVIDER }, { "fix_pins", OT_FIX_PINS },
 		{ "full_stats", OT_FULL_STATS }, { "fast", OT_FAST }, { "echo_file",
-				OT_CREATE_ECHO_FILE }, { "gen_postsynthesis_netlist",
+				OT_CREATE_ECHO_FILE }, 
+		{ "gen_postsynthesis_netlist",
 				OT_GENERATE_POST_SYNTHESIS_NETLIST }, { "timing_analysis",
 				OT_TIMING_ANALYSIS }, { "timing_analyze_only_with_net_delay",
 				OT_TIMING_ANALYZE_ONLY_WITH_NET_DELAY },
@@ -57,6 +58,11 @@ struct s_TokenPair OptionBaseTokenList[] = {
 		{ "power_output_file", OT_POWER_OUT_FILE }, /* Output file for power results */
 		{ "power", OT_POWER }, /* Run power estimation? */
 		{ "tech_properties", OT_CMOS_TECH_BEHAVIOR_FILE }, /* Technology properties */
+		/* EH: */
+		{ "dump_vtb_rrg", OT_DUMP_VTB_RRG },
+		{ "no_routethru", OT_NO_ROUTETHRU },
+		{ "no_reroute", OT_NO_REROUTE },
+		{ "no_globals", OT_NO_GLOBALS },
 		{ NULL, OT_BASE_UNKNOWN } /* End of list marker */
 };
 

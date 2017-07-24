@@ -96,6 +96,8 @@ static void ProcessSegments(INOUTP ezxml_t Parent,
 		INP boolean timing_enabled);
 static void ProcessCB_SB(INOUTP ezxml_t Node, INOUTP boolean * list,
 		INP int len);
+static void ProcessOverrides(INOUTP ezxml_t Parent, int *num_overrides, 
+		t_override **overrides);
 static void ProcessPower( INOUTP ezxml_t parent,
 		INOUTP t_power_arch * power_arch, INP t_type_descriptor * Types,
 		INP int NumTypes);
@@ -1673,47 +1675,50 @@ static void ProcessModels(INOUTP ezxml_t Node, OUTP struct s_arch *arch) {
 		/* Process the inputs */
 		p = ezxml_child(child, "input_ports");
 		junkp = p;
-		if (p == NULL)
+		if (p == NULL) {
 			vpr_printf(TIO_MESSAGE_ERROR,
 					"Required input ports not found for element '%s'.\n",
 					temp->name);
-
-		p = ezxml_child(p, "port");
-		if (p != NULL) {
-			while (p != NULL) {
-				tp = (t_model_ports*) my_calloc(1, sizeof(t_model_ports));
-				Prop = FindProperty(p, "name", TRUE);
-				tp->name = my_strdup(Prop);
-				ezxml_set_attr(p, "name", NULL);
-				tp->size = -1; /* determined later by pb_types */
-				tp->min_size = -1; /* determined later by pb_types */
-				tp->next = temp->inputs;
-				tp->dir = IN_PORT;
-				tp->is_non_clock_global = GetBooleanProperty(p,
-						"is_non_clock_global", FALSE, FALSE);
-				tp->is_clock = FALSE;
-				Prop = FindProperty(p, "is_clock", FALSE);
-				if (Prop && my_atoi(Prop) != 0) {
-					tp->is_clock = TRUE;
-				}
-				ezxml_set_attr(p, "is_clock", NULL);
-				if (tp->is_clock == TRUE && tp->is_non_clock_global == TRUE) {
-					vpr_printf(TIO_MESSAGE_ERROR,
-							"[LINE %d] Signal cannot be both a clock and a non-clock signal simultaneously\n",
-							p->line);
-				}
-				temp->inputs = tp;
-				junk = p;
-				p = ezxml_next(p);
-				FreeNode(junk);
-			}
-		} else /* No input ports? */
-		{
-			vpr_printf(TIO_MESSAGE_ERROR,
-					"Required input ports not found for element '%s'.\n",
-					temp->name);
+			
 		}
-		FreeNode(junkp);
+		else {
+			p = ezxml_child(p, "port");
+			if (p != NULL) {
+				while (p != NULL) {
+					tp = (t_model_ports*) my_calloc(1, sizeof(t_model_ports));
+					Prop = FindProperty(p, "name", TRUE);
+					tp->name = my_strdup(Prop);
+					ezxml_set_attr(p, "name", NULL);
+					tp->size = -1; /* determined later by pb_types */
+					tp->min_size = -1; /* determined later by pb_types */
+					tp->next = temp->inputs;
+					tp->dir = IN_PORT;
+					tp->is_non_clock_global = GetBooleanProperty(p,
+							"is_non_clock_global", FALSE, FALSE);
+					tp->is_clock = FALSE;
+					Prop = FindProperty(p, "is_clock", FALSE);
+					if (Prop && my_atoi(Prop) != 0) {
+						tp->is_clock = TRUE;
+					}
+					ezxml_set_attr(p, "is_clock", NULL);
+					if (tp->is_clock == TRUE && tp->is_non_clock_global == TRUE) {
+						vpr_printf(TIO_MESSAGE_ERROR,
+								"[LINE %d] Signal cannot be both a clock and a non-clock signal simultaneously\n",
+								p->line);
+					}
+					temp->inputs = tp;
+					junk = p;
+					p = ezxml_next(p);
+					FreeNode(junk);
+				}
+			} else /* No input ports? */
+			{
+				vpr_printf(TIO_MESSAGE_ERROR,
+						"Required input ports not found for element '%s'.\n",
+						temp->name);
+			}
+			FreeNode(junkp);
+		}
 
 		/* Process the outputs */
 		p = ezxml_child(child, "output_ports");
@@ -2445,9 +2450,9 @@ static void ProcessComplexBlocks(INOUTP ezxml_t Node,
 		Type->pb_type = (t_pb_type*) my_malloc(sizeof(t_pb_type));
 		Type->pb_type->name = my_strdup(Type->name);
 		if (i == IO_TYPE_INDEX) {
-			if (strcmp(Type->name, "io") != 0) {
+			if (strcmp(Type->name, "IOB") != 0) {
 				vpr_printf(TIO_MESSAGE_ERROR,
-						"First complex block must be named \"io\" and define the inputs and outputs for the FPGA");
+						"First complex block must be named \"IOB\" and define the inputs and outputs for the FPGA");
 				exit(1);
 			}
 		}
@@ -2612,6 +2617,15 @@ void XmlReadArch(INP const char *ArchFile, INP boolean timing_enabled,
 		}
 		FreeNode(Next);
 	}
+
+	// Process list of overrides
+	Next = FindElement(Cur, "overrideslist", FALSE);
+	if(Next != NULL)
+	{
+		ProcessOverrides(Next, &arch->num_overrides, &arch->overrides);
+		FreeNode(Next);
+	}
+
 	SyncModelsPbTypes(arch, *Types, *NumTypes);
 	UpdateAndCheckModels(arch);
 
@@ -3036,7 +3050,7 @@ static void CreateModelLibrary(OUTP struct s_arch *arch) {
 	model_library[0].outputs = (t_model_ports*) my_calloc(1,
 			sizeof(t_model_ports));
 	model_library[0].outputs->dir = OUT_PORT;
-	model_library[0].outputs->name = my_strdup("inpad");
+	model_library[0].outputs->name = my_strdup("i");
 	model_library[0].outputs->next = NULL;
 	model_library[0].outputs->size = 1;
 	model_library[0].outputs->min_size = 1;
@@ -3048,7 +3062,7 @@ static void CreateModelLibrary(OUTP struct s_arch *arch) {
 	model_library[1].inputs = (t_model_ports*) my_calloc(1,
 			sizeof(t_model_ports));
 	model_library[1].inputs->dir = IN_PORT;
-	model_library[1].inputs->name = my_strdup("outpad");
+	model_library[1].inputs->name = my_strdup("o");
 	model_library[1].inputs->next = NULL;
 	model_library[1].inputs->size = 1;
 	model_library[1].inputs->min_size = 1;
@@ -3469,6 +3483,35 @@ static void ProcessClocks(ezxml_t Parent, t_clock_arch * clocks) {
 		ezxml_set_attr(Node, "buffer_size", NULL);
 
 		clocks->clock_inf[i].C_wire = GetFloatProperty(Node, "C_wire", TRUE, 0);
+		FreeNode(Node);
+	}
+}
+
+/* EH: Function to read in the <override> addition to the architecture file */
+static void ProcessOverrides(INOUTP ezxml_t Parent, int *num_overrides, 
+		t_override **overrides)
+{
+	int i;
+
+	*num_overrides = CountChildren(Parent, "region", 1);
+	*overrides = (t_override*) malloc(sizeof(t_override)*(*num_overrides));
+	for (i = 0; i < *num_overrides; i++)
+	{
+		ezxml_t Node;
+		const char *Prop;
+
+		Node = ezxml_child(Parent, "region");
+		(*overrides)[i].startx = GetIntProperty(Node, "startx", TRUE, 0);
+		(*overrides)[i].starty = GetIntProperty(Node, "starty", TRUE, 0);
+		(*overrides)[i].endx = GetIntProperty(Node, "endx", TRUE, 0);
+		(*overrides)[i].endy = GetIntProperty(Node, "endy", TRUE, 0);
+		(*overrides)[i].incx = GetIntProperty(Node, "incx", FALSE, 1);
+		(*overrides)[i].incy = GetIntProperty(Node, "incy", FALSE, 1);
+
+		Prop = FindProperty(Node, "type", TRUE);
+		(*overrides)[i].type = strdup(Prop);
+		ezxml_set_attr(Node, "type", NULL);
+
 		FreeNode(Node);
 	}
 }

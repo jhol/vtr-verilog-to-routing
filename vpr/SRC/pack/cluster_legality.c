@@ -166,8 +166,25 @@ void reload_ext_net_rr_terminal_cluster(void) {
 				(logical_block[vpack_net[net_index].node_block[0]].clb_index
 						!= curr_cluster_index);
 		if (has_ext_source) {
+			/* EH: Go through all sinks and find the logical block
+			 * corresponding to this current cluster, and then
+			 * check if it's a BUFG */
+			boolean is_bufg = FALSE;
+			for (j = 1; j <= vpack_net[net_index].num_sinks; j++) {
+				int iblk = vpack_net[net_index].node_block[j];
+				if (logical_block[iblk].clb_index == curr_cluster_index) {
+					if (!strcmp(logical_block[iblk].model->name, "bufgctrl"))
+						is_bufg = TRUE;
+					break;
+				}
+			}
+			assert(j <= vpack_net[net_index].num_sinks);
+
 			/* Instantiate a source of this net */
-			if (vpack_net[net_index].is_global) {
+			/* EH: Only count the clock if net is global 
+			 * and this cluster is not a BUFG, because the
+			 * BUFG uses regular inputs (not clock inputs) */
+			if (vpack_net[net_index].is_global && !is_bufg) {
 				net_rr_terminals[net_index][0] = curr_ext_clock;
 				curr_ext_clock++;
 			} else {
@@ -967,7 +984,9 @@ void setup_intracluster_routing_for_logical_block(INP int iblock,
 	while (port) {
 		for (ipin = 0; ipin < port->size; ipin++) {
 			if (port->is_clock) {
-				assert(port->size == 1);
+				/* EH: Modify this check to allow clock bus on RAMs
+				 * so that RAMB36.CLK(ARD|BWD)CLK[LU]? can all be driven */
+				assert(port->size >= 1);
 				iblk_net = logical_block[iblock].clock_net;
 			} else {
 				iblk_net = logical_block[iblock].input_nets[port->index][ipin];

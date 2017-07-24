@@ -482,28 +482,38 @@ static void drawplace(void) {
 			height = grid[i][j].type->height;
 
 			if (num_sub_tiles < 1) {
+/* EH: Do not draw empty blocks */
+#if 0
 				setcolor(BLACK);
 				setlinestyle(DASHED);
 				drawrect(tile_x[i], tile_y[j], tile_x[i] + tile_width,
 						tile_y[j] + tile_width);
 				draw_x(tile_x[i] + (tile_width / 2),
 						tile_y[j] + (tile_width / 2), (tile_width / 2));
+#endif
 			}
 
 			for (k = 0; k < num_sub_tiles; ++k) {
 				/* Graphics will look unusual for multiple height and capacity */
 				assert(height == 1 || num_sub_tiles == 1);
 				/* Get coords of current sub_tile */
+/* EH: Do not draw top/bottom I/Os; 
+ *     do not restrict I/Os to i==0 or i==(nx+1) */
+#if 0
 				if ((i < 1) || (i > nx)) { /* left and right fringes */
+#endif
+				if (grid[i][j].type == IO_TYPE) {
 					x1 = tile_x[i];
 					y1 = tile_y[j] + (k * sub_tile_step);
 					x2 = x1 + tile_width;
 					y2 = y1 + sub_tile_step;
+#if 0
 				} else if ((j < 1) || (j > ny)) { /* top and bottom fringes */
 					x1 = tile_x[i] + (k * sub_tile_step);
 					y1 = tile_y[j];
 					x2 = x1 + sub_tile_step;
 					y2 = y1 + tile_width;
+#endif
 				} else {
 					assert(num_sub_tiles <= 1);
 					/* Need to change draw code to support */

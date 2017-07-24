@@ -108,8 +108,8 @@ void CheckOptions(INP t_options Options, INP boolean TimingEnabled) {
 		Cur = OptionBaseTokenList;
 		while (Cur->Str) {
 			if (Yes == Cur->Enum) {
-				vpr_printf(TIO_MESSAGE_ERROR, "Option '%s' is not allowed when placement is not run.\n", Cur->Str);
-				exit(1);
+				vpr_printf(TIO_MESSAGE_WARNING, "Option '%s' ignored when placement is not run.\n", Cur->Str);
+				/*exit(1);*/
 			}
 			++Cur;
 		}

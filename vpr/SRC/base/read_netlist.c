@@ -173,6 +173,7 @@ void read_netlist(INP const char *net_file, INP const t_arch *arch,
 			exit(1);
 		}
 	}
+
 	/* TODO: Add additional check to make sure net connections match */
 
 	
@@ -923,7 +924,12 @@ static void load_external_nets_and_cb(INP int L_num_blocks,
 					(*ext_nets)[netnum].node_block[count[netnum]] = i;
 					(*ext_nets)[netnum].node_block_pin[count[netnum]] = j;
 
-					(*ext_nets)[netnum].is_global = block_list[i].type->is_global_pin[j]; /* Error check performed later to ensure no mixing of global and non-global signals */
+					/* EH: Allow global flag to be set, but not unset
+					 * to prevent .subckt bufgctrl unsetting clocks,
+					 * this is important so that it bails on the block
+					 * with the non-clock input below... */
+					if (!(*ext_nets)[netnum].is_global)
+						(*ext_nets)[netnum].is_global = block_list[i].type->is_global_pin[j]; /* Error check performed later to ensure no mixing of global and non-global signals */
 				} else {
 					assert(
 							DRIVER == block_list[i].type->class_inf[block_list[i].type->pin_class[j]].type);
@@ -945,7 +951,19 @@ static void load_external_nets_and_cb(INP int L_num_blocks,
 		}
 		for (j = 0; j < num_tokens; j++) {
 			if (strcmp(circuit_clocks[j], (*ext_nets)[i].name) == 0) {
-				assert((*ext_nets)[i].is_global == TRUE); /* above code should have caught this case, if not, then bug in code */
+				/* EH: Allow clocks that only connect to BUFG to be non global */
+				boolean is_bufg;
+				if ((*ext_nets)[i].num_sinks == 1) {
+					int iblk = (*ext_nets)[i].node_block[1];
+					is_bufg = (strcmp(block_list[iblk].type->name, "BUFG") == 0 ? TRUE : FALSE);
+				}
+				else {
+					is_bufg = FALSE;
+				}
+			
+				if (!is_bufg) {
+					assert((*ext_nets)[i].is_global == TRUE); /* above code should have caught this case, if not, then bug in code */
+				}
 			}
 		}
 	}

@@ -168,11 +168,11 @@ static void get_channel_occupancy_stats(void) {
 
 	int i, j, max_occ, total_x, total_y;
 	float av_occ;
-	int **chanx_occ; /* [1..nx][0..ny] */
-	int **chany_occ; /* [0..nx][1..ny] */
+	int **chanx_occ; /* [0..nx][0..ny] */
+	int **chany_occ; /* [0..nx][0..ny] */
 
-	chanx_occ = (int **) alloc_matrix(1, nx, 0, ny, sizeof(int));
-	chany_occ = (int **) alloc_matrix(0, nx, 1, ny, sizeof(int));
+	chanx_occ = (int **) alloc_matrix(0, nx, 0, ny, sizeof(int));
+	chany_occ = (int **) alloc_matrix(0, nx, 0, ny, sizeof(int));
 	load_channel_occupancies(chanx_occ, chany_occ);
 
 	vpr_printf(TIO_MESSAGE_INFO, "\n");
@@ -215,8 +215,8 @@ static void get_channel_occupancy_stats(void) {
 	vpr_printf(TIO_MESSAGE_INFO, "Total tracks in x-direction: %d, in y-direction: %d\n", total_x, total_y);
 	vpr_printf(TIO_MESSAGE_INFO, "\n");
 
-	free_matrix(chanx_occ, 1, nx, 0, sizeof(int));
-	free_matrix(chany_occ, 0, nx, 1, sizeof(int));
+	free_matrix(chanx_occ, 0, nx, 0, sizeof(int));
+	free_matrix(chany_occ, 0, nx, 0, sizeof(int));
 }
 
 static void load_channel_occupancies(int **chanx_occ, int **chany_occ) {
@@ -283,6 +283,7 @@ void get_num_bends_and_length(int inet, int *bends_ptr, int *len_ptr,
 	int inode;
 	t_rr_type curr_type, prev_type;
 	int bends, length, segments;
+	int cost_index, default_cost, default_cost_ortho;
 
 	bends = 0;
 	length = 0;
@@ -295,12 +296,15 @@ void get_num_bends_and_length(int inet, int *bends_ptr, int *len_ptr,
 	}
 	inode = prevptr->index;
 	prev_type = rr_node[inode].type;
+	default_cost = 4;
+	default_cost_ortho = rr_indexed_data[default_cost].ortho_cost_index;
 
 	tptr = prevptr->next;
 
 	while (tptr != NULL) {
 		inode = tptr->index;
 		curr_type = rr_node[inode].type;
+		cost_index = rr_node[inode].cost_index;
 
 		if (curr_type == SINK) { /* Starting a new segment */
 			tptr = tptr->next; /* Link to existing path - don't add to len. */
@@ -311,13 +315,15 @@ void get_num_bends_and_length(int inet, int *bends_ptr, int *len_ptr,
 		}
 
 		else if (curr_type == CHANX || curr_type == CHANY) {
-			segments++;
-			length += 1 + rr_node[inode].xhigh - rr_node[inode].xlow
-					+ rr_node[inode].yhigh - rr_node[inode].ylow;
+			if (cost_index != default_cost && cost_index != default_cost_ortho) {
+				segments++;
+				length += 1 + rr_node[inode].xhigh - rr_node[inode].xlow
+						+ rr_node[inode].yhigh - rr_node[inode].ylow;
 
-			if (curr_type != prev_type
-					&& (prev_type == CHANX || prev_type == CHANY))
-				bends++;
+				if (curr_type != prev_type
+						&& (prev_type == CHANX || prev_type == CHANY))
+					bends++;
+			}
 		}
 
 		prev_type = curr_type;

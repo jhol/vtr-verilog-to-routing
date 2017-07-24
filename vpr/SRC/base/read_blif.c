@@ -570,6 +570,7 @@ static void add_subckt(int doall, t_model *user_models) {
 			subckt_signal_name[subckt_index_signals] = my_strdup(ptr);
 
 			toggle = 1;
+
 		} else if (toggle == 1) {
 			/* copy in the circuit_signal name */
 			circuit_signal_name[subckt_index_signals] = my_strdup(ptr);
@@ -704,21 +705,23 @@ static void add_subckt(int doall, t_model *user_models) {
 								subckt_signal_name[i], subckt_name);
 					}
 					found_subckt_signal = TRUE;
-					if (port->is_clock) {
-						assert(
-								logical_block[num_logical_blocks-1].clock_net == OPEN);
-						assert(my_atoi(pin_number) == 0);
-						logical_block[num_logical_blocks - 1].clock_net =
+					if (strcmp(circuit_signal_name[i], "unconn") != 0) {
+						if (port->is_clock) {
+							assert(
+									logical_block[num_logical_blocks-1].clock_net == OPEN);
+							assert(my_atoi(pin_number) == 0);
+							logical_block[num_logical_blocks - 1].clock_net = 
 								add_vpack_net(circuit_signal_name[i], RECEIVER,
 										num_logical_blocks - 1, port->index,
 										my_atoi(pin_number), TRUE, doall);
-					} else {
-						logical_block[num_logical_blocks - 1].input_nets[port->index][my_atoi(
-								pin_number)] = add_vpack_net(
-								circuit_signal_name[i], RECEIVER,
-								num_logical_blocks - 1, port->index,
-								my_atoi(pin_number), FALSE, doall);
-						input_net_count++;
+						} else {
+							logical_block[num_logical_blocks - 1].input_nets[port->index][my_atoi(
+									pin_number)] = add_vpack_net(
+										circuit_signal_name[i], RECEIVER,
+										num_logical_blocks - 1, port->index,
+										my_atoi(pin_number), FALSE, doall);
+							input_net_count++;
+						}
 					}
 				}
 				port = port->next;
@@ -945,7 +948,12 @@ static int add_vpack_net(char *ptr, int type, int bnum, int bport, int bpin,
 			vpack_net[nindex].node_block[j] = bnum;
 			vpack_net[nindex].node_block_port[j] = bport;
 			vpack_net[nindex].node_block_pin[j] = bpin;
-			vpack_net[nindex].is_global = is_global;
+			/* EH: allow global flag to be set, but not unset,
+			 * to allow clocks (into latches) to be set as global,
+			 * but not later unset because of connecting normally
+			 * into a BUFG */ 
+			if (!vpack_net[nindex].is_global)
+				vpack_net[nindex].is_global = is_global;
 			return (nindex);
 		}
 		prev_ptr = h_ptr;
@@ -1273,6 +1281,13 @@ static void check_net(boolean sweep_hanging_nets_and_inputs) {
 						L_check_net =
 								logical_block[iblk].input_nets[iport][ipin];
 					}
+					/* EH: Allow global clocks to connect to BUFGs */
+					if (L_check_net == OPEN) {
+						assert(strcmp(logical_block[iblk].model->name, "bufgctrl") == 0);
+						L_check_net =
+								logical_block[iblk].input_nets[iport][ipin];
+					}
+					assert(L_check_net != OPEN);
 					if (L_check_net != i) {
 						vpr_printf(TIO_MESSAGE_ERROR,
 								"Input net for block %s #%d is net %s #%d but connecting net is %s #%d.\n",
@@ -1659,7 +1674,7 @@ static void compress_netlist(void) {
 					for (ipin = 0; ipin < port->size; ipin++) {
 						if (port->is_clock) {
 							assert(
-									port->size == 1 && port->index == 0 && ipin == 0);
+									port->size >= 1 && port->index == 0 /*&& ipin == 0*/);
 							if (logical_block[index].clock_net == OPEN)
 								continue;
 							logical_block[index].clock_net =

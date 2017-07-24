@@ -325,8 +325,16 @@ void do_clustering(const t_arch *arch, t_pack_molecule *molecule_head,
 		hill_climbing_inputs_avail = NULL; /* if used, die hard */
 	}
 
-	/* TODO: make better estimate for nx and ny */
-	nx = ny = 1;
+	/* EH: Fix for fixed-size architectures */
+	num_instances_type = (int*)my_calloc(num_types, sizeof(int));
+	if (arch->clb_grid.IsAuto) {
+		/* TODO: make better estimate for nx and ny */
+		nx = ny = 1;
+	} else {
+		nx = arch->clb_grid.W;
+		ny = arch->clb_grid.H;
+		alloc_and_load_grid(num_instances_type, arch);
+	}
 
 	check_clocks(is_clock);
 #if 0
@@ -341,7 +349,7 @@ void do_clustering(const t_arch *arch, t_pack_molecule *molecule_head,
 	early_exit = FALSE;
 	num_blocks_hill_added = 0;
 	num_used_instances_type = (int*) my_calloc(num_types, sizeof(int));
-	num_instances_type = (int*) my_calloc(num_types, sizeof(int));
+	/*num_instances_type = (int*) my_calloc(num_types, sizeof(int));*/
 
 	assert(max_cluster_size < MAX_SHORT);
 	/* Limit maximum number of elements for each cluster */
@@ -632,12 +640,18 @@ static void check_clocks(boolean *is_clock) {
 				for (ipin = 0; ipin < port->size; ipin++) {
 					inet = logical_block[iblk].input_nets[port->index][ipin];
 					if (inet != OPEN) {
+						/* EH: Only error out if it's not a bufgctrl,
+						 * because these can have clocks on their 
+						 * regular ipins */
 						if (is_clock[inet]) {
-							vpr_printf(TIO_MESSAGE_ERROR, "Error in check_clocks.\n");
-							vpr_printf(TIO_MESSAGE_ERROR, "Net %d (%s) is a clock, but also connects to a logic block input on logical_block %d (%s).\n",
-									inet, vpack_net[inet].name, iblk, logical_block[iblk].name);
-							vpr_printf(TIO_MESSAGE_ERROR, "This would break the current clustering implementation and is electrically questionable, so clustering has been aborted.\n");
-							exit(1);
+							boolean is_bufg = (strcmp(logical_block[iblk].model->name, "bufgctrl") == 0 ? TRUE : FALSE);
+							if (!is_bufg) {
+								vpr_printf(TIO_MESSAGE_ERROR, "Error in check_clocks.\n");
+								vpr_printf(TIO_MESSAGE_ERROR, "Net %d (%s) is a clock, but also connects to a logic block input on logical_block %d (%s).\n",
+										inet, vpack_net[inet].name, iblk, logical_block[iblk].name);
+								vpr_printf(TIO_MESSAGE_ERROR, "This would break the current clustering implementation and is electrically questionable, so clustering has been aborted.\n");
+								exit(1);
+							}
 						}
 					}
 				}
@@ -923,7 +937,9 @@ static boolean primitive_type_and_memory_feasible(int iblk,
 						}
 					} else {
 						assert(port->dir == IN_PORT && port->is_clock);
-						assert(j == 0);
+						/* EH: Modify this check to allow clock bus on RAMs
+						 * so that RAMB36.CLK(ARD|BWD)CLK[LU]? can all be driven */
+						assert(j >= 0);
 						if (memory_class_pb) {
 							if (logical_block[iblk].clock_net
 									!= logical_block[sibling_memory_blk].clock_net) {
@@ -1977,7 +1993,7 @@ static void start_new_cluster(
 						nx, ny);
 				exit(1);
 			}
-			alloc_and_load_grid(num_instances_type);
+			alloc_and_load_grid(num_instances_type, arch);
 			freeGrid();
 		}
 	}
@@ -2248,6 +2264,7 @@ static void check_clustering(int num_clb, t_block *clb, boolean *is_clock) {
 	/* 
 	 * Check that each logical block connects to one primitive and that the primitive links up to the parent clb
 	 */
+	// TODO: This should be num_logical_blocks!?!
 	for (i = 0; i < num_blocks; i++) {
 		if (logical_block[i].pb->logical_block != i) {
 			vpr_printf(TIO_MESSAGE_ERROR, "pb %s does not contain logical block %s but logical block %s #%d links to pb.\n",
@@ -2532,7 +2549,9 @@ static void compute_and_mark_lookahead_pins_used(int ilogical_block) {
 		prim_port = &pb_type->ports[i];
 		if (prim_port->is_clock) {
 			assert(prim_port->type == IN_PORT);
-			assert(prim_port->num_pins == 1 && clock_port == 0);
+			/* EH: Modify this check to allow clock bus on RAMs
+			 * so that RAMB36.CLK(ARD|BWD)CLK[LU]? can all be driven */
+			assert(prim_port->num_pins >= 1 && clock_port == 0);
 			/* currently support only one clock for primitives */
 			if (logical_block[ilogical_block].clock_net != OPEN) {
 				compute_and_mark_lookahead_pins_used_for_pin(

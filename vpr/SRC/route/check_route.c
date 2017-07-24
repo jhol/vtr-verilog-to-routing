@@ -197,7 +197,7 @@ static void check_sink(int inode, int inet, boolean * pin_done) {
 		vpr_printf(TIO_MESSAGE_ERROR, "in check_sink: node %d does not connect to any terminal of net %s #%d.\n"
 									  "This error is usually caused by incorrectly specified logical equivalence in your architecture file.\n"
 									  "You should try to respecify what pins are equivalent or turn logical equivalence off.\n", inode, clb_net[inet].name, inet);
-		exit(1);
+		/*exit(1);*/
 	}
 }
 
@@ -314,6 +314,10 @@ static boolean check_adjacent(int from_node, int to_node) {
 
 	if (!reached)
 		return (FALSE);
+
+	/* EH: Do not check for adjacency because Xilinx wires
+	 * can be diagonal (e.g. NE, SW, etc.) */
+	return (TRUE);
 
 	/* Now we know the rr graph says these two nodes are adjacent.  Double  *
 	 * check that this makes sense, to verify the rr graph.                 */

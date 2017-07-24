@@ -206,6 +206,7 @@ void vpr_init(INP int argc, INP char **argv, OUTP t_options *options,
 	vpr_setup->TimingEnabled = IsTimingEnabled(options);
 	/* Determine whether echo is on or off */
 	setEchoEnabled(IsEchoEnabled(options));
+	setDumpVtbEnabled(IsDumpVtbEnabled(options));
 	SetPostSynthesisOption(IsPostSynthesisEnabled(options));
 	vpr_setup->constant_net_delay = options->constant_net_delay;
 
@@ -292,7 +293,7 @@ void vpr_init_pre_place_and_route(INP t_vpr_setup vpr_setup, INP t_arch Arch) {
 				vpr_printf(TIO_MESSAGE_INFO,
 						"Auto-sizing FPGA at x = %d y = %d\n", nx, ny);
 #endif
-				alloc_and_load_grid(num_instances_type);
+				alloc_and_load_grid(num_instances_type, &Arch);
 				freeGrid();
 
 				/* Test if netlist fits in grid */
@@ -333,13 +334,13 @@ void vpr_init_pre_place_and_route(INP t_vpr_setup vpr_setup, INP t_arch Arch) {
 				nx = current;
 				ny = nint(current / Arch.clb_grid.Aspect);
 			}
-			alloc_and_load_grid(num_instances_type);
+			alloc_and_load_grid(num_instances_type, &Arch);
 			vpr_printf(TIO_MESSAGE_INFO, "FPGA auto-sized to x = %d y = %d\n",
 					nx, ny);
 		} else {
 			nx = Arch.clb_grid.W;
 			ny = Arch.clb_grid.H;
-			alloc_and_load_grid(num_instances_type);
+			alloc_and_load_grid(num_instances_type, &Arch);
 		}
 
 		vpr_printf(TIO_MESSAGE_INFO,

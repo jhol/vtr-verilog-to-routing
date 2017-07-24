@@ -128,6 +128,10 @@ static int check_connections_to_global_clb_pins(int inet) {
 				vpr_printf(TIO_MESSAGE_WARNING, "\tnet #%d (%s) is driven by CLB output pin (#%d) on block #%d (%s).\n", 
 						inet, clb_net[inet].name, node_block_pin, iblk, block[iblk].name);
 			} else { /* Otherwise -> Error */
+				/* EH: Allow global clocks to connect to BUFGs */
+				boolean is_bufg = (strcmp(block[iblk].type->name, "BUFG") == 0 ? TRUE : FALSE);
+				if (is_bufg)
+					continue;
 				vpr_printf(TIO_MESSAGE_ERROR, "in check_connections_to_global_clb_pins:\n");
 				vpr_printf(TIO_MESSAGE_ERROR, "\tpin %d on net #%d (%s) connects to CLB input pin (#%d) on block #%d (%s).\n", 
 						ipin, inet, clb_net[inet].name, node_block_pin, iblk, block[iblk].name);

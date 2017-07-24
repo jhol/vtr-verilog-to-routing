@@ -56,9 +56,9 @@ void read_place(INP const char *place_file, INP const char *arch_file,
 		exit(1);
 	}
 	if (0 != strcmp(tokens[5], net_file)) {
-		vpr_printf(TIO_MESSAGE_ERROR, "'%s' - Netlist file that generated placement (%s) does not match current netlist file (%s).\n", 
+		vpr_printf(TIO_MESSAGE_WARNING, "'%s' - Netlist file that generated placement (%s) does not match current netlist file (%s).\n", 
 				place_file, tokens[5], net_file);
-		exit(1);
+		//exit(1);
 	}
 	free(*tokens);
 	free(tokens);
@@ -226,6 +226,7 @@ void read_user_pad_loc(char *pad_loc_file) {
 
 		block[bnum].x = i; /* Will be reloaded by initial_placement anyway. */
 		block[bnum].y = j; /* I need to set .x only as a done flag.         */
+		block[bnum].z = k;
 		block[bnum].isFixed = TRUE;
 
 		if (grid[i][j].type != IO_TYPE) {

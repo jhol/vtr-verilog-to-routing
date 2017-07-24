@@ -377,6 +377,17 @@ void load_timing_graph_net_delays(float **net_delay) {
 
 	for (inet = 0; inet < num_timing_nets; inet++) {
 		inode = f_net_to_driver_tnode[inet];
+		/* EH: Ignore split vcc/gnd nets
+		 * which don't have full connectivity */
+		if (inode == OPEN) {
+			if (strcmp(clb_net[inet].name, "gnd") == 0 ||
+				strcmp(clb_net[inet].name, "vcc") == 0 ||
+				strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) == 0) {
+				continue;
+			}
+		}
+		assert(inode != OPEN);
+
 		tedge = tnode[inode].out_edges;
 
 		/* Note that the edges of a tnode corresponding to a CLB or INPAD opin must  *
@@ -535,9 +546,20 @@ void print_slack(float ** slack, boolean slack_is_normalized, const char *fname)
 
 	for (inet = 0; inet < num_timing_nets; inet++) {
 		driver_tnode = f_net_to_driver_tnode[inet];
+		slk = slack[inet][1];
+		/* EH: Ignore split vcc/gnd nets
+		 * which don't have full connectivity */
+		if (driver_tnode == OPEN) {
+			if (strcmp(clb_net[inet].name, "gnd") == 0 ||
+				strcmp(clb_net[inet].name, "vcc") == 0 ||
+				strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) == 0) {
+				fprintf(fp, "%5d\t%5d\t\t%5d\t--\n", inet, driver_tnode, OPEN);
+				continue;
+			}
+		}
+		assert(driver_tnode != OPEN);
 		num_edges = tnode[driver_tnode].num_edges;
 		tedge = tnode[driver_tnode].out_edges;
-		slk = slack[inet][1];
 		if (slk < HUGE_POSITIVE_FLOAT - 1) {
 			fprintf(fp, "%5d\t%5d\t\t%5d\t%g\n", inet, driver_tnode, tedge[0].to_node, slk);
 		} else { /* Slack is meaningless, so replace with --. */
@@ -585,6 +607,18 @@ void print_criticality(t_slack * slacks, boolean criticality_is_normalized, cons
 
 	for (inet = 0; inet < num_timing_nets; inet++) {
 		driver_tnode = f_net_to_driver_tnode[inet];
+		/* EH: Ignore split vcc/gnd nets
+		 * which don't have full connectivity */
+		if (driver_tnode == OPEN) {
+			if (strcmp(clb_net[inet].name, "gnd") == 0 ||
+				strcmp(clb_net[inet].name, "vcc") == 0 ||
+				strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) == 0) {
+				fprintf(fp, "\n%5d\t%5d\t\t%5d\t\t%.6f", inet, driver_tnode, OPEN, slacks->timing_criticality[inet][1]);
+				continue;
+			}
+		}
+		assert(driver_tnode != OPEN);
+
 		num_edges = tnode[driver_tnode].num_edges;
 		tedge = tnode[driver_tnode].out_edges;
 
@@ -681,6 +715,12 @@ void print_net_delay(float **net_delay, const char *fname) {
 
 	for (inet = 0; inet < num_timing_nets; inet++) {
 		driver_tnode = f_net_to_driver_tnode[inet];
+		/* EH: Some nets that I've added after the timing graph
+		 * was created will not have a driver --- skip those */
+		if (driver_tnode == OPEN) {
+			fprintf(fp, "%5d\t%5d\t\t%5d\t%g\n", inet, OPEN, OPEN, net_delay[inet][1]);
+			continue;
+		}
 		num_edges = tnode[driver_tnode].num_edges;
 		tedge = tnode[driver_tnode].out_edges;
 		fprintf(fp, "%5d\t%5d\t\t%5d\t%g\n", inet, driver_tnode, tedge[0].to_node, net_delay[inet][1]);
@@ -738,6 +778,7 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 	t_pb_graph_pin *ipb_graph_pin;
 	t_rr_node *local_rr_graph, *d_rr_graph;
 	int num_dangling_pins;
+	int isink;
 
 	f_net_to_driver_tnode = (int*)my_malloc(num_timing_nets * sizeof(int));
 
@@ -756,6 +797,9 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 								== PB_PIN_OUTPAD
 						|| block[i].pb->rr_graph[j].pb_graph_pin->type
 								== PB_PIN_SEQUENTIAL) {
+					num_nodes_in_block += 2;
+				/* EH: Treat bufgctrl.o as PI */
+				} else if (strcmp(block[i].type->name, "BUFG") == 0 && strcmp(block[i].pb->rr_graph[j].pb_graph_pin->port->name, "o") == 0) {
 					num_nodes_in_block += 2;
 				} else {
 					num_nodes_in_block++;
@@ -793,6 +837,7 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 		 */
 		count = 0;
 		iblock = tnode[i].block;
+
 		switch (tnode[i].type) {
 		case TN_INPAD_OPIN:
 		case TN_INTERMEDIATE_NODE:
@@ -907,11 +952,15 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 			tnode[i].out_edges = (t_tedge *) my_chunk_malloc(
 					clb_net[inet].num_sinks * sizeof(t_tedge),
 					&tedge_ch);
-			for (j = 1; j <= clb_net[inet].num_sinks; j++) {
-				dblock = clb_net[inet].node_block[j];
+			/* EH: Separate the clb_net sink count from the
+			 * tnode edge count, necessary for removing timing graph
+			 * edges (below) */
+			j = 1;
+			for (isink = 1; isink <= clb_net[inet].num_sinks; isink++) {
+				dblock = clb_net[inet].node_block[isink];
 				normalization = block[dblock].type->num_pins
 						/ block[dblock].type->capacity;
-				normalized_pin = clb_net[inet].node_block_pin[j]
+				normalized_pin = clb_net[inet].node_block_pin[isink]
 						% normalization;
 				d_rr_graph = block[dblock].pb->rr_graph;
 				dpin = OPEN;
@@ -953,12 +1002,29 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 								block[dblock].pb->pb_graph_node->num_clock_pins[k];
 					}
 					assert(dpin != OPEN);
+					/* EH: If the destination PB RRG has an empty net_num, it can only
+					 * be a gnd net or a clock net, so check for global */
+					if (d_rr_graph[block[dblock].pb->pb_graph_node->clock_pins[dport][dpin].pin_count_in_cluster].net_num == OPEN) {
+						assert(clb_net[inet].is_global);
+						/* Remove this edge from the timing graph*/
+						--tnode[i].num_edges;
+						continue;
+					}
+
 					assert(
 							inet == vpack_to_clb_net_mapping[d_rr_graph[block[dblock].pb->pb_graph_node->clock_pins[dport][dpin].pin_count_in_cluster].net_num]);
 					tnode[i].out_edges[j - 1].to_node =
 							get_tnode_index(d_rr_graph[block[dblock].pb->pb_graph_node->clock_pins[dport][dpin].pin_count_in_cluster].tnode);
 				} else {
 					assert(dpin != OPEN);
+					/* EH: If the destination PB RRG has an empty net_num, it may be
+					 * be a global net, or a duplicated connection (e.g. we[0] -> we[1:7]) */
+					if (d_rr_graph[block[dblock].pb->pb_graph_node->input_pins[dport][dpin].pin_count_in_cluster].net_num == OPEN) {
+						// Remove this edge from the timing graph
+						--tnode[i].num_edges;
+						continue;
+					}
+
 					assert(
 							inet == vpack_to_clb_net_mapping[d_rr_graph[block[dblock].pb->pb_graph_node->input_pins[dport][dpin].pin_count_in_cluster].net_num]);
 					/* delays are assigned post routing */
@@ -967,6 +1033,8 @@ static void alloc_and_load_tnodes(t_timing_inf timing_inf) {
 				}
 				tnode[i].out_edges[j - 1].Tdel = 0;
 				assert(inet != OPEN);
+				// EH: Increment edge count here
+				++j;
 			}
 			break;
 		case TN_OUTPAD_IPIN:
@@ -1049,6 +1117,10 @@ static void alloc_and_load_tnodes_from_prepacked_netlist(float block_delay,
 				for (k = 0; k < model_port->size; k++) {
 					if (logical_block[i].output_nets[j][k] != OPEN) {
 						num_tnodes += incr;
+						/* EH: Treat bufgctrl.o as PI */
+						if (strcmp(logical_block[i].model->name, "bufgctrl") == 0 && strcmp(model_port->name, "o") == 0) {
+							num_tnodes += 2-incr;
+						}
 					}
 				}
 				j++;
@@ -1056,6 +1128,7 @@ static void alloc_and_load_tnodes_from_prepacked_netlist(float block_delay,
 			}
 			logical_block[i].output_net_tnodes = (t_tnode ***)my_calloc(j,
 					sizeof(t_tnode**));
+
 		}
 	}
 	tnode = (t_tnode *)my_calloc(num_tnodes, sizeof(t_tnode));
@@ -1135,7 +1208,20 @@ static void alloc_and_load_tnodes_from_prepacked_netlist(float block_delay,
 								tnode[inode].num_edges * sizeof(t_tedge),
 								&tedge_ch);
 
-						if (logical_block[i].clock_net == OPEN) {
+						/* EH: Treat bufgctrl.o as PI */
+						if (strcmp(logical_block[i].model->name, "bufgctrl") == 0 && strcmp(model_port->name, "o") == 0) {
+							tnode[inode].type = TN_INPAD_OPIN;
+
+							tnode[inode + 1].num_edges = 1;
+							tnode[inode + 1].out_edges = (t_tedge *) my_chunk_malloc(
+									1 * sizeof(t_tedge), &tedge_ch);
+							tnode[inode + 1].out_edges->Tdel = 0;
+							tnode[inode + 1].out_edges->to_node = inode;
+							tnode[inode + 1].type = TN_INPAD_SOURCE;
+							tnode[inode + 1].block = i;
+							inode += 2;
+						}
+						else if (logical_block[i].clock_net == OPEN) {
 							tnode[inode].type = TN_PRIMITIVE_OPIN;
 							inode++;
 						} else {
@@ -1377,8 +1463,24 @@ static void load_tnode(INP t_pb_graph_pin *pb_graph_pin, INP int iblock,
 				tnode[i].type = TN_PRIMITIVE_IPIN;
 			} else {
 				assert(tnode[i].pb_graph_pin->port->type == OUT_PORT);
-				assert(tnode[i].pb_graph_pin->type == PB_PIN_TERMINAL);
-				tnode[i].type = TN_PRIMITIVE_OPIN;
+				/* EH: Treat bufgctrl.o as PI */
+				if (strcmp(block[iblock].type->name, "BUFG") == 0 && strcmp(tnode[i].pb_graph_pin->port->name, "o") == 0) {
+					tnode[i].type = TN_INPAD_OPIN;
+					tnode[i + 1].num_edges = 1;
+					tnode[i + 1].out_edges = (t_tedge *) my_chunk_malloc(
+							1 * sizeof(t_tedge), &tedge_ch);
+					tnode[i + 1].out_edges->Tdel = 0;
+					tnode[i + 1].out_edges->to_node = i;
+					tnode[i + 1].pb_graph_pin = pb_graph_pin; /* Necessary for propagate_clock_domain_and_skew(). */
+					tnode[i + 1].type = TN_INPAD_SOURCE;
+					tnode[i + 1].block = iblock;
+					(*inode)++;
+				}
+				else 
+				{
+					assert(tnode[i].pb_graph_pin->type == PB_PIN_TERMINAL);
+					tnode[i].type = TN_PRIMITIVE_OPIN;
+				}
 			}
 		}
 	}
@@ -2363,7 +2465,19 @@ static void update_slacks(t_slack * slacks, int source_clock_domain, int sink_cl
 	float T_arr, Tdel, T_req, slk, timing_criticality;
 
 	for (inet = 0; inet < num_timing_nets; inet++) {
+
 		inode = f_net_to_driver_tnode[inet];
+		/* EH: Ignore split vcc/gnd nets, and BUFG output nets, 
+		 * which don't have full connectivity */
+		if (inode == OPEN) {
+			if (strcmp(clb_net[inet].name, "gnd") == 0 ||
+				strcmp(clb_net[inet].name, "vcc") == 0 ||
+				strncmp(clb_net[inet].name, "GLOBAL_LOGIC", strlen("GLOBAL_LOGIC")) == 0) {
+				continue;
+			}
+		}
+		assert(inode != OPEN);
+
 		T_arr = tnode[inode].T_arr;
 
 		if (!(has_valid_T_arr(inode) && has_valid_T_req(inode))) {
@@ -2970,7 +3084,9 @@ static t_tnode * find_ff_clock_tnode(int inode, boolean is_prepacked) {
 		parent_pb_graph_node = ff_source_or_sink_pb_graph_pin->parent_node;
 		/* Make sure there's only one clock port and only one clock pin in that port */
 		assert(parent_pb_graph_node->num_clock_ports == 1);
-		assert(parent_pb_graph_node->num_clock_pins[0] == 1);
+		/* EH: Modify this check to allow clock bus on RAMs
+		 * so that RAMB36.CLK(ARD|BWD)CLK[LU]? can all be driven */
+		assert(parent_pb_graph_node->num_clock_pins[0] >= 1);
 		clock_pb_graph_pin = &parent_pb_graph_node->clock_pins[0][0];
 		ff_clock_tnode = rr_graph[clock_pb_graph_pin->pin_count_in_cluster].tnode;
 	}

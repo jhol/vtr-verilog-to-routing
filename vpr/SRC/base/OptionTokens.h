@@ -74,6 +74,11 @@ enum e_OptionBaseToken {
 	OT_ACTIVITY_FILE,
 	OT_POWER_OUT_FILE,
 	OT_CMOS_TECH_BEHAVIOR_FILE,
+	/* EH: */
+	OT_DUMP_VTB_RRG,
+	OT_NO_ROUTETHRU,
+	OT_NO_REROUTE,
+	OT_NO_GLOBALS,
 	OT_BASE_UNKNOWN /* Must be last since used for counting enum items */
 };
 

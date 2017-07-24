@@ -771,6 +771,16 @@ typedef struct s_direct_inf {
 	int line;
 } t_direct_inf;
 
+/* EH */
+struct s_override
+{
+	int startx, starty;
+	int endx, endy;
+	int incx, incy;
+	char *type;
+};
+typedef struct s_override t_override;
+
 /*   Detailed routing architecture */
 typedef struct s_arch t_arch;
 struct s_arch {
@@ -794,6 +804,9 @@ struct s_arch {
 	t_model *model_library;
 	t_power_arch * power;
 	t_clock_arch * clocks;
+	/* EH */
+	int num_overrides;
+	t_override *overrides;
 };
 
 #endif

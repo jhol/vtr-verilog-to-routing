@@ -23,14 +23,15 @@ OPTIMIZATION_LEVEL_FOR_RELEASE_BUILD = -O3
 
 CC = $(COMPILER)
 LIB_DIR = -L.
-LIB = -lm -lvpr
+LIB = -lm -lvpr -lz
 SRC_DIR = SRC
 OBJ_DIR = OBJ
+OBJ_DIR_DEBUG = OBJ_DEBUG
 OTHER_DIR = -ISRC/util -ISRC/timing -ISRC/pack -ISRC/place -ISRC/base -ISRC/route -ISRC/power -I../printhandler/SRC/TIO_InputOutputHandlers
 
 WARN_FLAGS = -Wall -Wpointer-arith -Wcast-qual -D__USE_FIXED_PROTOTYPES__ -ansi -pedantic -Wshadow -Wcast-align -D_POSIX_SOURCE -Wno-write-strings
 
-DEBUG_FLAGS = -g 
+DEBUG_FLAGS = -O0 -g 
 OPT_FLAGS = $(OPTIMIZATION_LEVEL_FOR_RELEASE_BUILD)
 INC_FLAGS = -I../libarchfpga/include
 
@@ -66,14 +67,25 @@ else
 endif
 
 EXE = vpr
+EXE_DEBUG = vpr_debug
 
 OBJ = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o,$(wildcard $(SRC_DIR)/*.c $(SRC_DIR)/*/*.c))
 OBJ_DIRS=$(sort $(dir $(OBJ)))
 DEP := $(OBJ:.o=.d)
 
+OBJ_DEBUG = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR_DEBUG)/%.o,$(wildcard $(SRC_DIR)/*.c $(SRC_DIR)/*/*.c))
+OBJ_DIRS_DEBUG=$(sort $(dir $(OBJ_DEBUG)))
+DEP_DEBUG := $(OBJ_DEBUG:.o=.d)
+
+all: $(EXE) $(EXE_DEBUG)
+
 # notify is an order-only prerequisite - note the "|"
 $(EXE): $(OBJ) Makefile libvpr.a | notify
-	$(CC) $(FLAGS) OBJ/main.o -o $(EXE) $(LIB_DIR) $(LIB)
+	$(CC) $(FLAGS) $(OPT_FLAGS) OBJ/main.o -o $(EXE) $(LIB_DIR) -lvpr $(LIB)
+
+$(EXE_DEBUG): $(OBJ_DEBUG) Makefile libvpr_debug.a | notify
+	$(CC) $(FLAGS) $(DEBUG_FLAGS) OBJ_DEBUG/main.o -o $(EXE_DEBUG) $(LIB_DIR) -lvpr_debug $(LIB)
+
 
 # if graphics enabled but libx11-dev is not installed, notify the user
 notify:
@@ -92,6 +104,12 @@ libvpr.a: $(OBJ) Makefile ../libarchfpga/libarchfpga.a
 	@ ar rcs $@ $(OBJ)
 	@ ar d $@ main.o
 
+libvpr_debug.a: $(OBJ_DEBUG) Makefile libarchfpga
+	@ cp ../libarchfpga/libarchfpga.a $@
+	@ ar rcs $@ $(OBJ_DEBUG)
+	@ ar d $@ main.o
+
+
 # Enable a second round of expansion so that we may include
 # the target directory as a prerequisite of the object file.
 .SECONDEXPANSION:
@@ -101,16 +119,21 @@ libvpr.a: $(OBJ) Makefile ../libarchfpga/libarchfpga.a
 # without this, all but the last file written to a directory would appear
 # to be out of date.
 $(OBJ): OBJ/%.o:$(SRC_DIR)/%.c | $$(dir $$@D)
-	$(CC) $(FLAGS) -MD -MP -I$(OTHER_DIR) -ISRC/util -c $< -o $@
+	$(CC) $(FLAGS) $(OPT_FLAGS) -MD -MP -I$(OTHER_DIR) -ISRC/util -c $< -o $@
+
+$(OBJ_DEBUG): OBJ_DEBUG/%.o:$(SRC_DIR)/%.c | $$(dir $$@D)
+	$(CC) $(FLAGS) $(DEBUG_FLAGS) -MD -MP -I$(OTHER_DIR) -ISRC/util -c $< -o $@
 
 # Silently create target directories as need
-$(OBJ_DIRS):
+$(OBJ_DIRS) $(OBJ_DIRS_DEBUG):
 	@ mkdir -p $@
 
 -include $(DEP)
+-include $(DEP_DEBUG)
 
 clean:
 	rm -f $(EXE) $(OBJ) $(DEP)
+	rm -f $(EXE_DEBUG) $(OBJ_DEBUG) $(DEP_DEBUG)
 	cd ../libarchfpga && make clean
 
 clean_coverage: clean
