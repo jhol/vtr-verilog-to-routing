@@ -195,8 +195,8 @@ static void print_open_pb_graph_node(t_type_ptr type, t_pb_graph_node * pb_graph
 
 		VTR_ASSERT(mode != NULL && mode_of_edge != UNDEFINED);
 		fprintf(fpout,
-				"<block name=\"open\" instance=\"%s[%d]\" mode=\"%s\">\n",
-				pb_graph_node->pb_type->name, pb_index, mode->name);
+				"<block name=\"open\" instance=\"%s[%d]\" mode=\"%s\" pb_type_num_modes=\"%d\">\n",
+				pb_graph_node->pb_type->name, pb_index, mode->name, pb_type->num_modes);
 
 		print_tabs(fpout, tab_depth);
 		fprintf(fpout, "\t<inputs>\n");
@@ -319,6 +319,17 @@ static void print_pb(FILE *fpout, t_type_ptr type, t_pb * pb, int pb_index, t_pb
 	if (pb_type->num_modes == 0) {
 		fprintf(fpout, "<block name=\"%s\" instance=\"%s[%d]\">\n", pb->name,
 				pb_type->name, pb_index);
+
+		auto& atom_ctx = g_vpr_ctx.atom();
+		AtomBlockId atom_blk = atom_ctx.nlist.find_block(pb->name);
+		VTR_ASSERT(atom_blk);
+
+		for (auto& attr : atom_ctx.nlist.block_attrs(atom_blk)) {
+			print_tabs(fpout, tab_depth);
+			fprintf(fpout, "\t<attribute name=\"%s\">%s</attribute>\n", attr.first.c_str(), attr.second.c_str());
+		}
+
+		// TODO: Add params and attrs here.
 	} else {
 		fprintf(fpout, "<block name=\"%s\" instance=\"%s[%d]\" mode=\"%s\">\n",
 				pb->name, pb_type->name, pb_index, mode->name);
