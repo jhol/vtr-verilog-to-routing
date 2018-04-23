@@ -64,7 +64,7 @@
 //Name Escaping
 //=============
 //One of the challenges in generating netlists is producing consistent naming of netlist elements.
-//In particular valid BLIF names, Verilog names and SDF names are not neccessarily the same.
+//In particular valid BLIF names, Verilog names and SDF names are not necessarily the same.
 //As a result we must escape invalid characters/identifiers when producing some formats.
 //
 //All name escaping is handled at the output stage (i.e. in the print_*() functions) since it is

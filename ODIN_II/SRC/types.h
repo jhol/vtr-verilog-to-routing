@@ -579,7 +579,7 @@ struct netlist_t_t
 	nnode_t ***forward_levels;
 	int num_forward_levels;
 	int* num_at_forward_level;
-	nnode_t ***backward_levels; // NOTE backward levels isn't neccessarily perfect.  Because of multiple output pins, the node can be put closer to POs than should be.  To fix, run a rebuild of the list afterwards since the marked "node->backward_level" is correct */
+	nnode_t ***backward_levels; // NOTE backward levels isn't necessarily perfect.  Because of multiple output pins, the node can be put closer to POs than should be.  To fix, run a rebuild of the list afterwards since the marked "node->backward_level" is correct */
 	int num_backward_levels;
 	int* num_at_backward_level;
 

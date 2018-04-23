@@ -74,7 +74,7 @@ std::tuple<ClusterNetId,int,int> find_pb_route_clb_input_net_pin(ClusterBlockId 
 //Return the pb pin index corresponding to the pin clb_pin on block clb,
 //acounting for the effect of 'z' position > 0.
 //
-//  Note that a CLB pin index does not (neccessarily) map directly to the pb_route index representing the first stage
+//  Note that a CLB pin index does not (necessarily) map directly to the pb_route index representing the first stage
 //  of internal routing in the block, since a block may have capacity > 1 (e.g. IOs)
 //  
 //  In the clustered netlist blocks with capacity > 1 may have their 'z' position > 0, and their clb pin indicies offset

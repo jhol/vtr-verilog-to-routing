@@ -1302,7 +1302,7 @@ static int find_affected_blocks(ClusterBlockId b_from, int x_to, int y_to, int z
             // * match the correct block type
             //
             //Note that we need to explicitly check that the types match, since the device floorplan is not
-            //(neccessarily) translationally invariant for an arbitrary macro
+            //(necessarily) translationally invariant for an arbitrary macro
 			if (   curr_x_to < 1 || curr_x_to >= int(device_ctx.grid.width())
                 || curr_y_to < 1 || curr_y_to >= int(device_ctx.grid.height()) 
                 || curr_z_to < 0
