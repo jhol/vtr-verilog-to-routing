@@ -576,6 +576,17 @@ struct t_pb_type {
 
 	/* Power related members */
 	t_pb_type_power * pb_type_power = nullptr;
+
+	inline enum e_pb_type_level level() {
+		if (num_modes == 0)
+			return HIERARCHY_LEAF;
+		else if (model != 0)
+			return HIERARCHY_PRIMITIVE;
+		else if (parent_mode != nullptr)
+			return HIERARCHY_INTERMEDIATE;
+		else
+			return HIERARCHY_ROOT;
+	}
 };
 
 /** Describes an operational mode of a clustered logic block
