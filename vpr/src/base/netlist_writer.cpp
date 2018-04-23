@@ -27,6 +27,8 @@
 #include "atom_netlist.h"
 #include "atom_netlist_utils.h"
 
+#include "fasm.h"
+
 //Overview
 //========
 //
@@ -1943,6 +1945,13 @@ void netlist_writer(const std::string basename, std::shared_ptr<const AnalysisDe
     NetlistWalker nl_walker(visitor);
 
     nl_walker.walk();
+
+    std::string fasm_filename = basename + ".fasm";
+    vtr::printf("Writing Implementation FASM: %s\n", fasm_filename.c_str());
+    std::ofstream fasm_os(fasm_filename);
+    FASMWriterVisitor visitor2(fasm_os);
+    NetlistWalker nl_walker2(visitor2);
+    nl_walker2.walk();
 }
 
 //
